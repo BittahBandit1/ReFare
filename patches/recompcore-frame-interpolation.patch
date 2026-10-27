@@ -93,7 +93,7 @@ index fc6f896..f279f4f 100644
    }
  
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index bf81554..a310945 100644
+index bf81554..aa1f038 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -19,6 +19,7 @@
@@ -104,7 +104,7 @@ index bf81554..a310945 100644
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoConfig.h"
  #include "VideoCommon/VideoEvents.h"
-@@ -168,6 +169,44 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -168,6 +169,47 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
  void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
                         TimePoint presentation_time)
  {
@@ -141,15 +141,18 @@ index bf81554..a310945 100644
 +      m_refare_interp_rect = interp.rect;
 +      Present(timed ? &interp_info : nullptr);
 +      m_refare_interp_texture = nullptr;
++      // When Metal paces the pair, submit the real frame right away; it
++      // stays queued until the in-between frame has had its 120 Hz slot.
 +      if (timed)
-+        presentation_time = base + half_field;
++        presentation_time =
++            RefareFrameInterpolation::BackendPacesPairs() ? base : base + half_field;
 +    }
 +  }
 +
    bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
  
    PresentInfo present_info{
-@@ -970,7 +1009,15 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -970,7 +1012,15 @@ void Presenter::Present(PresentInfo* present_info)
    const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
  
    // Render the XFB to the screen.
@@ -166,7 +169,7 @@ index bf81554..a310945 100644
    {
      // Adjust the source rectangle instead of using an oversized viewport to render the XFB.
      MathUtil::Rectangle<int> render_target_rc = GetTargetRectangle();
-@@ -1005,7 +1052,7 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -1005,7 +1055,7 @@ void Presenter::Present(PresentInfo* present_info)
      g_gfx->PresentBackbuffer();
    }
  
@@ -192,10 +195,10 @@ index 91ba870..c041ec3 100644
  
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.cpp b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
 new file mode 100644
-index 0000000..0dcb846
+index 0000000..e099255
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
-@@ -0,0 +1,584 @@
+@@ -0,0 +1,613 @@
 +// ReFare: render-only frame interpolation. See RefareFrameInterpolation.h.
 +
 +#include "VideoCommon/RefareFrameInterpolation.h"
@@ -230,6 +233,7 @@ index 0000000..0dcb846
 +#include "VideoCommon/VertexLoaderManager.h"
 +#include "VideoCommon/VertexManagerBase.h"
 +#include "VideoCommon/VertexShaderManager.h"
++#include "VideoCommon/VideoConfig.h"
 +#include "VideoCommon/XFMemory.h"
 +#include "VideoCommon/XFStateManager.h"
 +
@@ -461,9 +465,37 @@ index 0000000..0dcb846
 +  {
 +    s.enabled = enabled;
 +    Reset();
++    // Metal with VSync keeps each drawable on screen for at least the
++    // configured minimum duration, which ReFare sets to one 60 Hz frame on
++    // 60/120 Hz displays. That caps presents at 60/s, and the back-pressure
++    // stalls this thread. While interpolating, halve it to one 120 Hz frame
++    // so Metal itself spaces the in-between and real frames.
++    static double s_saved_min_duration = 0.0;
++    if (enabled)
++    {
++      const double current = Config::Get(Config::GFX_MTL_MINIMUM_PRESENT_DURATION);
++      if (current > 0.0)
++      {
++        s_saved_min_duration = current;
++        Config::SetCurrent(Config::GFX_MTL_MINIMUM_PRESENT_DURATION,
++                           std::max(0.0, (current + 0.0005) / 2.0 - 0.0005));
++      }
++    }
++    else if (s_saved_min_duration > 0.0)
++    {
++      Config::SetCurrent(Config::GFX_MTL_MINIMUM_PRESENT_DURATION, s_saved_min_duration);
++      s_saved_min_duration = 0.0;
++    }
 +    INFO_LOG_FMT(VIDEO, "ReFare frame interpolation {}", enabled ? "on" : "off");
 +  }
 +  return enabled;
++}
++
++bool BackendPacesPairs()
++{
++  return S().enabled && g_backend_info.api_type == APIType::Metal &&
++         g_ActiveConfig.bVSyncActive &&
++         Config::Get(Config::GFX_MTL_MINIMUM_PRESENT_DURATION) > 0.0;
 +}
 +
 +bool IsReplaying()
@@ -782,10 +814,10 @@ index 0000000..0dcb846
 +}  // namespace RefareFrameInterpolation
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.h b/Source/Core/VideoCommon/RefareFrameInterpolation.h
 new file mode 100644
-index 0000000..9b7f3a7
+index 0000000..fd08f70
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.h
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,63 @@
 +// ReFare: render-only frame interpolation (experimental, off by default).
 +//
 +// The game still runs its logic at 59.94 Hz. Each emulated frame's GPU command
@@ -837,6 +869,11 @@ index 0000000..9b7f3a7
 +// Presenter side: the interpolated image that belongs before the real XFB at
 +// `xfb_addr`, if one was rendered. Consumes it.
 +bool TakeFrame(u32 xfb_addr, Frame* out);
++
++// True when the video backend enforces a one-120 Hz-frame minimum display
++// time per drawable (Metal + VSync). The presenter then submits the pair
++// back to back instead of sleeping between them on the video thread.
++bool BackendPacesPairs();
 +
 +// Presenter-side statistics (REFARE_INTERP_STATS).
 +void NotePresent(bool shown, double lateness_ms);
