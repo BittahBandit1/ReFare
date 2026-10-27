@@ -1,0 +1,816 @@
+diff --git a/Source/Core/Core/Config/GraphicsSettings.cpp b/Source/Core/Core/Config/GraphicsSettings.cpp
+index 1eb34bf..c968c89 100644
+--- a/Source/Core/Core/Config/GraphicsSettings.cpp
++++ b/Source/Core/Core/Config/GraphicsSettings.cpp
+@@ -227,4 +227,9 @@ const Info<bool> GFX_HACK_NO_MIPMAPPING{{System::GFX, "Hacks", "NoMipmapping"},
+ 
+ const Info<bool> GFX_PERF_QUERIES_ENABLE{{System::GFX, "GameSpecific", "PerfQueriesEnable"}, false};
+ 
++// ReFare
++
++const Info<bool> GFX_REFARE_FRAME_INTERPOLATION{
++    {System::GFX, "Enhancements", "RefareFrameInterpolation"}, false};
++
+ }  // namespace Config
+diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
+index d1bc17c..d60d363 100644
+--- a/Source/Core/Core/Config/GraphicsSettings.h
++++ b/Source/Core/Core/Config/GraphicsSettings.h
+@@ -197,6 +197,10 @@ extern const Info<bool> GFX_HACK_NO_MIPMAPPING;
+ 
+ extern const Info<bool> GFX_PERF_QUERIES_ENABLE;
+ 
++// ReFare
++
++extern const Info<bool> GFX_REFARE_FRAME_INTERPOLATION;
++
+ // Android custom GPU drivers
+ 
+ extern const Info<std::string> GFX_DRIVER_LIB_NAME;
+diff --git a/Source/Core/VideoCommon/BPStructs.cpp b/Source/Core/VideoCommon/BPStructs.cpp
+index d7f1cc1..79c478c 100644
+--- a/Source/Core/VideoCommon/BPStructs.cpp
++++ b/Source/Core/VideoCommon/BPStructs.cpp
+@@ -41,6 +41,7 @@
+ #include "VideoCommon/VideoConfig.h"
+ #include "VideoCommon/VideoEvents.h"
+ #include "VideoCommon/XFStateManager.h"
++#include "VideoCommon/RefareFrameInterpolation.h"
+ 
+ using namespace BPFunctions;
+ 
+@@ -369,6 +370,9 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+         // https://dolphin-emu.org/blog/2017/11/19/hybridxfb/ for examples and more detail.
+         system.GetVideoEvents().after_frame_event.Trigger(system);
+ 
++        // ReFare: render the interpolated in-between frame (if enabled).
++        RefareFrameInterpolation::OnXFBCopy(srcRect, destAddr);
++
+         // Note: Theoretically, in the future we could track the VI configuration and try to detect
+         //       when an XFB is the last XFB copy of a frame. Not only would we get a clean "end of
+         //       the frame", but we would also be able to use ImmediateXFB even for these games.
+@@ -409,6 +413,9 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+                                          bpmem.scissorBR, bpmem.scissorOffset, xfmem.viewport);
+     }
+ 
++    if (PE_copy.copy_to_xfb == 1 && destStride != 0)
++      RefareFrameInterpolation::OnFrameStart(PE_copy.clear != 0, srcRect);
++
+     return;
+   }
+   case BPMEM_LOADTLUT0:  // This updates bpmem.tmem_config.tlut_src, no need to do anything here.
+diff --git a/Source/Core/VideoCommon/CMakeLists.txt b/Source/Core/VideoCommon/CMakeLists.txt
+index 69a0968..3a88fc0 100644
+--- a/Source/Core/VideoCommon/CMakeLists.txt
++++ b/Source/Core/VideoCommon/CMakeLists.txt
+@@ -145,6 +145,8 @@ add_library(videocommon
+   PostProcessing.cpp
+   PostProcessing.h
+   Present.cpp
++  RefareFrameInterpolation.cpp
++  RefareFrameInterpolation.h
+   Present.h
+   RenderState.cpp
+   RenderState.h
+diff --git a/Source/Core/VideoCommon/OpcodeDecoding.cpp b/Source/Core/VideoCommon/OpcodeDecoding.cpp
+index fc6f896..f279f4f 100644
+--- a/Source/Core/VideoCommon/OpcodeDecoding.cpp
++++ b/Source/Core/VideoCommon/OpcodeDecoding.cpp
+@@ -24,6 +24,7 @@
+ #include "VideoCommon/CommandProcessor.h"
+ #include "VideoCommon/DataReader.h"
+ #include "VideoCommon/Fifo.h"
++#include "VideoCommon/RefareFrameInterpolation.h"
+ #include "VideoCommon/Statistics.h"
+ #include "VideoCommon/VertexLoaderBase.h"
+ #include "VideoCommon/VertexLoaderManager.h"
+@@ -235,6 +236,7 @@ public:
+       {
+         Core::System::GetInstance().GetFifoRecorder().WriteGPCommand(data, size);
+       }
++      RefareFrameInterpolation::OnCommand(data, size);
+     }
+   }
+ 
+diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
+index bf81554..b80e4c6 100644
+--- a/Source/Core/VideoCommon/Present.cpp
++++ b/Source/Core/VideoCommon/Present.cpp
+@@ -19,6 +19,7 @@
+ #include "VideoCommon/FramebufferManager.h"
+ #include "VideoCommon/OnScreenUI.h"
+ #include "VideoCommon/PostProcessing.h"
++#include "VideoCommon/RefareFrameInterpolation.h"
+ #include "VideoCommon/VertexManagerBase.h"
+ #include "VideoCommon/VideoConfig.h"
+ #include "VideoCommon/VideoEvents.h"
+@@ -168,6 +169,34 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
+                        TimePoint presentation_time)
+ {
++  // ReFare frame interpolation: show the interpolated image (halfway between
++  // the previous frame and this one) at the frame's slot, then the real frame
++  // half a field later. Costs one 120 Hz frame of latency. A late interpolated
++  // frame is dropped rather than delaying the real one.
++  RefareFrameInterpolation::Frame interp;
++  if (fb_width != 0 && fb_height != 0 && g_gfx->SupportsUtilityDrawing() &&
++      RefareFrameInterpolation::TakeFrame(xfb_addr, &interp))
++  {
++    const auto half_field = std::chrono::duration_cast<DT>(std::chrono::microseconds(8342));
++    const bool timed = presentation_time.time_since_epoch().count() != 0;
++    if (!timed || Clock::now() - presentation_time < std::chrono::milliseconds(4))
++    {
++      PresentInfo interp_info{
++          .frame_count = m_frame_count,
++          .present_count = m_present_count++,
++          .reason = PresentInfo::PresentReason::Immediate,
++          .emulated_timestamp = ticks,
++          .intended_present_time = presentation_time,
++      };
++      m_refare_interp_texture = interp.texture;
++      m_refare_interp_rect = interp.rect;
++      Present(timed ? &interp_info : nullptr);
++      m_refare_interp_texture = nullptr;
++    }
++    if (timed)
++      presentation_time += half_field;
++  }
++
+   bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
+ 
+   PresentInfo present_info{
+@@ -970,7 +999,15 @@ void Presenter::Present(PresentInfo* present_info)
+   const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
+ 
+   // Render the XFB to the screen.
+-  if (backbuffer_bound && m_xfb_entry)
++  if (backbuffer_bound && m_refare_interp_texture)
++  {
++    MathUtil::Rectangle<int> render_target_rc = GetTargetRectangle();
++    MathUtil::Rectangle<int> render_source_rc = AdjustForCustomCrop(m_refare_interp_rect);
++    AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
++                                m_backbuffer_height);
++    RenderXFBToScreen(render_target_rc, m_refare_interp_texture, render_source_rc);
++  }
++  else if (backbuffer_bound && m_xfb_entry)
+   {
+     // Adjust the source rectangle instead of using an oversized viewport to render the XFB.
+     MathUtil::Rectangle<int> render_target_rc = GetTargetRectangle();
+@@ -1005,7 +1042,7 @@ void Presenter::Present(PresentInfo* present_info)
+     g_gfx->PresentBackbuffer();
+   }
+ 
+-  if (m_xfb_entry)
++  if (m_xfb_entry && !m_refare_interp_texture)
+   {
+     // Update the window size based on the frame that was just rendered.
+     // Due to depending on guest state, we need to call this every frame.
+diff --git a/Source/Core/VideoCommon/Present.h b/Source/Core/VideoCommon/Present.h
+index 91ba870..c041ec3 100644
+--- a/Source/Core/VideoCommon/Present.h
++++ b/Source/Core/VideoCommon/Present.h
+@@ -152,6 +152,10 @@ private:
+   u32 m_auto_resolution_scale = 1;
+ 
+   RcTcacheEntry m_xfb_entry;
++  // ReFare frame interpolation: when set, Present() shows this image instead
++  // of the XFB entry (the interpolated frame shown ahead of the real one).
++  const AbstractTexture* m_refare_interp_texture = nullptr;
++  MathUtil::Rectangle<int> m_refare_interp_rect;
+   // Internal resolution multiplier scaled XFB size
+   MathUtil::Rectangle<int> m_xfb_rect{0, 0, MAX_XFB_WIDTH, MAX_XFB_HEIGHT};
+ 
+diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.cpp b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
+new file mode 100644
+index 0000000..9dee940
+--- /dev/null
++++ b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
+@@ -0,0 +1,548 @@
++// ReFare: render-only frame interpolation. See RefareFrameInterpolation.h.
++
++#include "VideoCommon/RefareFrameInterpolation.h"
++
++#include <algorithm>
++#include <bit>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <unordered_map>
++#include <vector>
++
++#include "Common/ChunkFile.h"
++#include "Common/Logging/Log.h"
++#include "Common/Swap.h"
++#include "Core/Config/GraphicsSettings.h"
++#include "Core/System.h"
++#include "VideoCommon/AbstractGfx.h"
++#include "VideoCommon/AbstractTexture.h"
++#include "VideoCommon/BPFunctions.h"
++#include "VideoCommon/BPMemory.h"
++#include "VideoCommon/BPStructs.h"
++#include "VideoCommon/CPMemory.h"
++#include "VideoCommon/DataReader.h"
++#include "VideoCommon/FramebufferManager.h"
++#include "VideoCommon/GeometryShaderManager.h"
++#include "VideoCommon/OpcodeDecoding.h"
++#include "VideoCommon/PixelShaderManager.h"
++#include "VideoCommon/TextureConfig.h"
++#include "VideoCommon/VertexLoaderManager.h"
++#include "VideoCommon/VertexManagerBase.h"
++#include "VideoCommon/VertexShaderManager.h"
++#include "VideoCommon/XFMemory.h"
++#include "VideoCommon/XFStateManager.h"
++
++namespace RefareFrameInterpolation
++{
++namespace
++{
++// A frame larger than this is not recorded (protects memory on odd titles).
++constexpr size_t kMaxStreamBytes = 64u << 20;
++
++struct XFLoad
++{
++  u32 offset;  // offset of the first data word inside the stream
++  u16 address;
++  u8 count;
++  u64 key = 0;  // 0 until the primitive using it is seen
++};
++
++struct Recording
++{
++  std::vector<u8> stream;
++  std::vector<XFLoad> loads;
++  std::vector<u32> pending;  // indices into `loads` awaiting their primitive
++  std::unordered_map<u64, u32> occurrences;
++  bool overflow = false;
++
++  void Clear()
++  {
++    stream.clear();
++    loads.clear();
++    pending.clear();
++    occurrences.clear();
++    overflow = false;
++  }
++};
++
++struct State
++{
++  bool enabled = false;
++  bool replaying = false;
++
++  // GPU state at the start of the frame being recorded.
++  bool have_start = false;
++  std::vector<u8> start_state;
++  bool start_cleared = false;
++  MathUtil::Rectangle<int> start_clear_rect;
++  u32 start_clear_ar = 0, start_clear_gb = 0, start_clear_z = 0;
++  bool start_color_update = false, start_alpha_update = false, start_z_update = false;
++  PixelFormat start_pixel_format{};
++
++  Recording current;
++
++  // Matrix values of the previous frame, by match key (host-endian words).
++  std::unordered_map<u64, std::vector<u32>> previous;
++  bool have_previous = false;
++
++  std::unique_ptr<AbstractTexture> texture;
++  std::mutex frame_mutex;
++  bool frame_ready = false;
++  u32 frame_addr = 0;
++  MathUtil::Rectangle<int> frame_rect;
++
++  u64 stats_frames = 0;
++  u64 stats_loads = 0;
++  u64 stats_matched = 0;
++  u64 stats_blended = 0;
++};
++
++State& S()
++{
++  static State state;
++  return state;
++}
++
++u64 Mix(u64 h, u64 v)
++{
++  h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
++  return h * 0xff51afd7ed558ccdull;
++}
++
++u64 HashBytes(const u8* data, u32 size)
++{
++  u64 h = 0xcbf29ce484222325ull;
++  for (u32 i = 0; i < size; ++i)
++    h = (h ^ data[i]) * 0x100000001b3ull;
++  return h;
++}
++
++void DoGPUState(PointerWrap& p)
++{
++  auto& system = Core::System::GetInstance();
++  p.Do(bpmem);
++  p.Do(g_main_cp_state);
++  p.Do(xfmem);
++  system.GetXFStateManager().DoState(p);
++  system.GetPixelShaderManager().DoState(p);
++  system.GetVertexShaderManager().DoState(p);
++  system.GetGeometryShaderManager().DoState(p);
++  g_vertex_manager->DoState(p);
++}
++
++std::vector<u8> SaveGPUState()
++{
++  u8* ptr = nullptr;
++  PointerWrap measure(&ptr, 0, PointerWrap::Mode::Measure);
++  DoGPUState(measure);
++  const size_t size = reinterpret_cast<size_t>(ptr);
++
++  std::vector<u8> buffer(size);
++  ptr = buffer.data();
++  PointerWrap write(&ptr, size, PointerWrap::Mode::Write);
++  DoGPUState(write);
++  return buffer;
++}
++
++void LoadGPUState(std::vector<u8>& buffer)
++{
++  u8* ptr = buffer.data();
++  PointerWrap read(&ptr, buffer.size(), PointerWrap::Mode::Read);
++  DoGPUState(read);
++  CopyPreprocessCPStateFromMain();
++  // Same refresh as a savestate load (VideoState.cpp).
++  BPReload();
++  VertexLoaderManager::MarkAllDirty();
++}
++
++bool IsFloatWord(u32 address)
++{
++  // Position/texture matrices, normal matrices, post-transform matrices and
++  // the projection parameters. Lights mix colors (ints) with floats: skip.
++  return address < 0x100 || (address >= 0x400 && address < 0x460) ||
++         (address >= 0x500 && address < 0x600) || (address >= 0x1020 && address <= 0x1025);
++}
++
++// Decides whether two versions of a load are close enough to blend. Large
++// rotation changes are camera cuts or teleports: show the current frame's
++// value instead of a meaningless midpoint.
++bool ShouldBlend(u16 address, u8 count, const u32* prev, const u32* cur)
++{
++  if (address >= 0x1020 && address <= 0x1026)
++  {
++    // Projection: never blend across a perspective/orthographic switch, and
++    // treat a >20% scale change as a cut (FOV snap).
++    for (u32 i = 0; i < count; ++i)
++    {
++      const u32 a = address + i;
++      if (a == 0x1026 && prev[i] != cur[i])
++        return false;
++      if (a == 0x1020 || a == 0x1022)
++      {
++        const float p = std::bit_cast<float>(prev[i]);
++        const float c = std::bit_cast<float>(cur[i]);
++        if (std::abs(p - c) > 0.2f * std::max(std::abs(p), std::abs(c)))
++          return false;
++      }
++    }
++    return true;
++  }
++
++  // Matrices: rows of 4 floats (normal matrices rows of 3). Compare the
++  // linear part row by row, relative to the row's magnitude.
++  const u32 row = (address >= 0x400 && address < 0x460) ? 3 : 4;
++  for (u32 base = 0; base + row <= count; base += row)
++  {
++    float diff = 0.0f, norm = 0.0f;
++    for (u32 j = 0; j < 3; ++j)
++    {
++      const float p = std::bit_cast<float>(prev[base + j]);
++      const float c = std::bit_cast<float>(cur[base + j]);
++      if (!std::isfinite(p) || !std::isfinite(c))
++        return false;
++      diff = std::max(diff, std::abs(p - c));
++      norm = std::max(norm, std::max(std::abs(p), std::abs(c)));
++    }
++    if (diff > 0.35f * norm + 1e-6f)
++      return false;
++  }
++
++  // Full 3x4 matrices: also reject large jumps of the translation (camera-
++  // space position). Identical models drawn several times (traffic cars,
++  // pedestrians) can swap draw order between frames; blending two different
++  // instances would draw a ghost halfway between them.
++  if (row == 4)
++  {
++    for (u32 base = 0; base + 12 <= count; base += 12)
++    {
++      float d2 = 0.0f, p2 = 0.0f, c2 = 0.0f;
++      for (u32 r = 0; r < 3; ++r)
++      {
++        const float p = std::bit_cast<float>(prev[base + r * 4 + 3]);
++        const float c = std::bit_cast<float>(cur[base + r * 4 + 3]);
++        d2 += (p - c) * (p - c);
++        p2 += p * p;
++        c2 += c * c;
++      }
++      const float limit = 0.2f * std::sqrt(std::max(p2, c2));
++      if (d2 > limit * limit && d2 > 1e-8f)
++        return false;
++    }
++  }
++  return true;
++}
++
++void EnsureTexture(u32 width, u32 height, u32 layers, AbstractTextureFormat format)
++{
++  State& s = S();
++  if (s.texture)
++  {
++    const TextureConfig& c = s.texture->GetConfig();
++    if (c.width == width && c.height == height && c.layers == layers && c.format == format)
++      return;
++  }
++  s.texture = g_gfx->CreateTexture(TextureConfig(width, height, 1, layers, 1, format, 0,
++                                                 AbstractTextureType::Texture_2DArray),
++                                   "ReFare interpolated frame");
++}
++}  // namespace
++
++bool IsEnabled()
++{
++  State& s = S();
++  const bool enabled = Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION);
++  if (enabled != s.enabled)
++  {
++    s.enabled = enabled;
++    Reset();
++    INFO_LOG_FMT(VIDEO, "ReFare frame interpolation {}", enabled ? "on" : "off");
++  }
++  return enabled;
++}
++
++bool IsReplaying()
++{
++  return S().replaying;
++}
++
++void OnCommand(const u8* data, u32 size)
++{
++  State& s = S();
++  if (!s.enabled || s.replaying || !s.have_start)
++    return;
++  Recording& r = s.current;
++  if (r.overflow)
++    return;
++  if (r.stream.size() + size + 80 > kMaxStreamBytes)
++  {
++    r.overflow = true;
++    return;
++  }
++
++  const u8 opcode = data[0];
++  switch (static_cast<OpcodeDecoder::Opcode>(opcode))
++  {
++  case OpcodeDecoder::Opcode::GX_CMD_CALL_DL:
++    // Display-list contents were already recorded as they executed.
++    return;
++
++  case OpcodeDecoder::Opcode::GX_LOAD_BP_REG:
++  {
++    // Interrupt-raising writes would signal the CPU a second time.
++    const u8 reg = data[1];
++    if (reg == BPMEM_SETDRAWDONE || reg == BPMEM_PE_TOKEN_ID || reg == BPMEM_PE_TOKEN_INT_ID)
++      return;
++    if (reg == BPMEM_TRIGGER_EFB_COPY)
++    {
++      UPE_Copy copy;
++      copy.Hex = Common::swap24(&data[2]);
++      if (copy.copy_to_xfb)
++        return;
++    }
++    break;
++  }
++
++  case OpcodeDecoder::Opcode::GX_LOAD_XF_REG:
++  {
++    const u32 cmd2 = Common::swap32(&data[1]);
++    XFLoad load;
++    load.offset = static_cast<u32>(r.stream.size() + 5);
++    load.address = static_cast<u16>(cmd2 & 0xffff);
++    load.count = static_cast<u8>(((cmd2 >> 16) & 0xf) + 1);
++    r.pending.push_back(static_cast<u32>(r.loads.size()));
++    r.loads.push_back(load);
++    break;
++  }
++
++  case OpcodeDecoder::Opcode::GX_LOAD_INDX_A:
++  case OpcodeDecoder::Opcode::GX_LOAD_INDX_B:
++  case OpcodeDecoder::Opcode::GX_LOAD_INDX_C:
++  case OpcodeDecoder::Opcode::GX_LOAD_INDX_D:
++  {
++    // Indexed loads read guest RAM, which the CPU may already have
++    // overwritten when the replay runs. Record the values the load produced
++    // as an equivalent immediate XF load instead.
++    const u32 value = Common::swap32(&data[1]);
++    const u16 address = value & 0xFFF;
++    const u8 count = ((value >> 12) & 0xF) + 1;
++    if (address + count > XFMEM_REGISTERS_START)
++      return;
++    const u32 cmd2 = (u32(count - 1) << 16) | address;
++    const size_t at = r.stream.size();
++    r.stream.resize(at + 5 + count * 4u);
++    u8* out = &r.stream[at];
++    out[0] = static_cast<u8>(OpcodeDecoder::Opcode::GX_LOAD_XF_REG);
++    const u32 cmd2_be = Common::swap32(cmd2);
++    std::memcpy(out + 1, &cmd2_be, 4);
++    const u32* words = reinterpret_cast<const u32*>(&xfmem) + address;
++    for (u32 i = 0; i < count; ++i)
++    {
++      const u32 be = Common::swap32(words[i]);
++      std::memcpy(out + 5 + i * 4, &be, 4);
++    }
++    XFLoad load;
++    load.offset = static_cast<u32>(at + 5);
++    load.address = address;
++    load.count = count;
++    r.pending.push_back(static_cast<u32>(r.loads.size()));
++    r.loads.push_back(load);
++    return;
++  }
++
++  default:
++    if (opcode >= static_cast<u8>(OpcodeDecoder::Opcode::GX_PRIMITIVE_START) &&
++        opcode <= static_cast<u8>(OpcodeDecoder::Opcode::GX_PRIMITIVE_END))
++    {
++      if (!r.pending.empty())
++      {
++        // Identify the draw by its header and leading vertex/index bytes.
++        const u64 prim = HashBytes(data, std::min<u32>(size, 64));
++        for (const u32 index : r.pending)
++        {
++          XFLoad& load = r.loads[index];
++          const u64 base = Mix(Mix(prim, load.address), load.count);
++          const u32 occurrence = r.occurrences[base]++;
++          load.key = Mix(base, occurrence) | 1;
++        }
++        r.pending.clear();
++      }
++    }
++    else if (opcode != static_cast<u8>(OpcodeDecoder::Opcode::GX_NOP) &&
++             opcode != static_cast<u8>(OpcodeDecoder::Opcode::GX_LOAD_CP_REG) &&
++             opcode != static_cast<u8>(OpcodeDecoder::Opcode::GX_CMD_INVL_VC) &&
++             opcode != static_cast<u8>(OpcodeDecoder::Opcode::GX_CMD_UNKNOWN_METRICS))
++    {
++      // Unknown opcodes are reported to the command processor; don't repeat.
++      return;
++    }
++    break;
++  }
++
++  r.stream.insert(r.stream.end(), data, data + size);
++}
++
++void OnFrameStart(bool cleared, const MathUtil::Rectangle<int>& clear_rect)
++{
++  State& s = S();
++  if (!s.enabled || s.replaying)
++    return;
++  g_vertex_manager->Flush();
++  s.current.Clear();
++  s.start_state = SaveGPUState();
++  s.start_cleared = cleared;
++  s.start_clear_rect = clear_rect;
++  s.start_clear_ar = bpmem.clearcolorAR;
++  s.start_clear_gb = bpmem.clearcolorGB;
++  s.start_clear_z = bpmem.clearZValue;
++  s.start_color_update = bpmem.blendmode.color_update != 0;
++  s.start_alpha_update = bpmem.blendmode.alpha_update != 0;
++  s.start_z_update = bpmem.zmode.update_enable != 0;
++  s.start_pixel_format = bpmem.zcontrol.pixel_format;
++  s.have_start = true;
++}
++
++void OnXFBCopy(const MathUtil::Rectangle<int>& src_rect, u32 dest_addr)
++{
++  State& s = S();
++  if (!IsEnabled() || s.replaying)
++    return;
++
++  Recording& r = s.current;
++  const bool can_replay = s.have_start && !r.overflow && s.have_previous;
++
++  // Keyed matrix values of this frame, for the next frame's blend.
++  std::unordered_map<u64, std::vector<u32>> values;
++  values.reserve(r.loads.size());
++  for (const XFLoad& load : r.loads)
++  {
++    if (load.key == 0)
++      continue;
++    std::vector<u32> words(load.count);
++    for (u32 i = 0; i < load.count; ++i)
++      words[i] = Common::swap32(&r.stream[load.offset + i * 4]);
++    values.emplace(load.key, std::move(words));
++  }
++
++  if (can_replay && !r.stream.empty())
++  {
++    // Blend this frame's matrices halfway back toward the previous frame.
++    std::vector<u8> stream = r.stream;
++    u64 matched = 0, blended = 0;
++    for (const XFLoad& load : r.loads)
++    {
++      if (load.key == 0)
++        continue;
++      const auto it = s.previous.find(load.key);
++      if (it == s.previous.end() || it->second.size() != load.count)
++        continue;
++      ++matched;
++      const u32* prev = it->second.data();
++      const u32* cur = values[load.key].data();
++      if (!ShouldBlend(load.address, load.count, prev, cur))
++        continue;
++      ++blended;
++      for (u32 i = 0; i < load.count; ++i)
++      {
++        if (!IsFloatWord(load.address + i))
++          continue;
++        const float p = std::bit_cast<float>(prev[i]);
++        const float c = std::bit_cast<float>(cur[i]);
++        const u32 mid = Common::swap32(std::bit_cast<u32>(0.5f * (p + c)));
++        std::memcpy(&stream[load.offset + i * 4], &mid, 4);
++      }
++    }
++    s.stats_loads += r.loads.size();
++    s.stats_matched += matched;
++    s.stats_blended += blended;
++
++    // Snapshot the end-of-frame state, rewind to the start of the frame and
++    // render it again with the blended matrices.
++    g_vertex_manager->Flush();
++    std::vector<u8> end_state = SaveGPUState();
++    LoadGPUState(s.start_state);
++
++    if (s.start_cleared)
++    {
++      BPFunctions::ClearScreen(g_framebuffer_manager.get(), s.start_clear_rect,
++                               s.start_color_update, s.start_alpha_update,
++                               s.start_z_update, s.start_pixel_format,
++                               s.start_clear_ar, s.start_clear_gb, s.start_clear_z);
++      BPFunctions::SetScissorAndViewport(g_framebuffer_manager.get(), bpmem.scissorTL,
++                                         bpmem.scissorBR, bpmem.scissorOffset, xfmem.viewport);
++    }
++
++    s.replaying = true;
++    OpcodeDecoder::RunFifo<false>(DataReader(stream.data(), stream.data() + stream.size()),
++                                  nullptr);
++    g_vertex_manager->Flush();
++    s.replaying = false;
++
++    // Keep a copy of the replayed EFB region for the presenter.
++    MathUtil::Rectangle<int> rect = g_framebuffer_manager->ConvertEFBRectangle(src_rect);
++    rect.ClampUL(0, 0, static_cast<int>(g_framebuffer_manager->GetEFBWidth()),
++                 static_cast<int>(g_framebuffer_manager->GetEFBHeight()));
++    AbstractTexture* efb = g_framebuffer_manager->ResolveEFBColorTexture(rect);
++    if (efb && rect.GetWidth() > 0 && rect.GetHeight() > 0)
++    {
++      std::lock_guard lock(s.frame_mutex);
++      EnsureTexture(rect.GetWidth(), rect.GetHeight(), g_framebuffer_manager->GetEFBLayers(),
++                    efb->GetConfig().format);
++      if (s.texture)
++      {
++        const MathUtil::Rectangle<int> dst{0, 0, rect.GetWidth(), rect.GetHeight()};
++        for (u32 layer = 0; layer < g_framebuffer_manager->GetEFBLayers(); ++layer)
++          s.texture->CopyRectangleFromTexture(efb, rect, layer, 0, dst, layer, 0);
++        s.texture->FinishedRendering();
++        s.frame_ready = true;
++        s.frame_addr = dest_addr;
++        s.frame_rect = dst;
++      }
++    }
++
++    LoadGPUState(end_state);
++
++    // Set REFARE_INTERP_STATS=1 to print match statistics every ~10 s.
++    static const bool print_stats = std::getenv("REFARE_INTERP_STATS") != nullptr;
++    if ((++s.stats_frames % 600) == 0 && print_stats)
++    {
++      std::fprintf(stderr,
++                   "[refare] interpolation: %llu frames, %llu matrix loads, %.1f%% matched, "
++                   "%.1f%% blended, last stream %zu bytes\n",
++                   static_cast<unsigned long long>(s.stats_frames),
++                   static_cast<unsigned long long>(s.stats_loads),
++                   s.stats_loads ? 100.0 * s.stats_matched / s.stats_loads : 0.0,
++                   s.stats_loads ? 100.0 * s.stats_blended / s.stats_loads : 0.0,
++                   r.stream.size());
++    }
++  }
++
++  s.previous = std::move(values);
++  s.have_previous = s.have_start && !r.overflow;
++}
++
++bool TakeFrame(u32 xfb_addr, Frame* out)
++{
++  State& s = S();
++  std::lock_guard lock(s.frame_mutex);
++  if (!s.frame_ready || s.frame_addr != xfb_addr || !s.texture)
++    return false;
++  s.frame_ready = false;
++  out->texture = s.texture.get();
++  out->rect = s.frame_rect;
++  return true;
++}
++
++void Reset()
++{
++  State& s = S();
++  s.current.Clear();
++  s.have_start = false;
++  s.have_previous = false;
++  s.previous.clear();
++  std::lock_guard lock(s.frame_mutex);
++  s.frame_ready = false;
++}
++}  // namespace RefareFrameInterpolation
+diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.h b/Source/Core/VideoCommon/RefareFrameInterpolation.h
+new file mode 100644
+index 0000000..837d394
+--- /dev/null
++++ b/Source/Core/VideoCommon/RefareFrameInterpolation.h
+@@ -0,0 +1,55 @@
++// ReFare: render-only frame interpolation (experimental, off by default).
++//
++// The game still runs its logic at 59.94 Hz. Each emulated frame's GPU command
++// stream is recorded as it executes. When the frame ends (its XFB copy), the
++// stream is replayed once more from the frame's starting GPU state with every
++// transform/projection matrix load blended halfway toward the previous frame's
++// matching load. The replayed image is shown first and the real frame half a
++// refresh later, giving 119.88 presents per second on a 120 Hz display at the
++// cost of one 120 Hz frame (~8.3 ms) of extra latency.
++//
++// Matrix loads are matched between frames by the address they load, the hash
++// of the primitive they are used for, and how many times that pair occurred
++// earlier in the frame (the approach RT64 uses for N64 interpolation).
++#pragma once
++
++#include <memory>
++
++#include "Common/CommonTypes.h"
++#include "Common/MathUtil.h"
++
++class AbstractTexture;
++
++namespace RefareFrameInterpolation
++{
++// Re-reads the config setting; call once per frame on the GPU thread.
++bool IsEnabled();
++
++// Called by the opcode decoder after each executed (non-preprocess) command,
++// including commands inside display lists.
++void OnCommand(const u8* data, u32 size);
++
++// True while the interpolated replay is running (suppresses recursion).
++bool IsReplaying();
++
++// Called from the XFB copy, after the real copy and before its clear. Renders
++// the interpolated frame for this XFB if possible.
++void OnXFBCopy(const MathUtil::Rectangle<int>& src_rect, u32 dest_addr);
++
++// Called after the XFB copy (and its clear) finished: the next command starts
++// a new frame. `cleared` reports whether the copy cleared `clear_rect`.
++void OnFrameStart(bool cleared, const MathUtil::Rectangle<int>& clear_rect);
++
++struct Frame
++{
++  const AbstractTexture* texture = nullptr;
++  MathUtil::Rectangle<int> rect;
++};
++
++// Presenter side: the interpolated image that belongs before the real XFB at
++// `xfb_addr`, if one was rendered. Consumes it.
++bool TakeFrame(u32 xfb_addr, Frame* out);
++
++// Drops all recorded state (e.g. after a savestate load or setting change).
++void Reset();
++}  // namespace RefareFrameInterpolation
+diff --git a/Source/Core/VideoCommon/VideoState.cpp b/Source/Core/VideoCommon/VideoState.cpp
+index 4b1892a..59744d7 100644
+--- a/Source/Core/VideoCommon/VideoState.cpp
++++ b/Source/Core/VideoCommon/VideoState.cpp
+@@ -17,6 +17,7 @@
+ #include "VideoCommon/PixelEngine.h"
+ #include "VideoCommon/PixelShaderManager.h"
+ #include "VideoCommon/Present.h"
++#include "VideoCommon/RefareFrameInterpolation.h"
+ #include "VideoCommon/TMEM.h"
+ #include "VideoCommon/TextureCacheBase.h"
+ #include "VideoCommon/TextureDecoder.h"
+@@ -113,5 +114,6 @@ void VideoCommon_DoState(PointerWrap& p)
+     // Inform backend of new state from registers.
+     BPReload();
+     VertexLoaderManager::MarkAllDirty();
++    RefareFrameInterpolation::Reset();
+   }
+ }

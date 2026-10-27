@@ -31,9 +31,10 @@ constexpr std::array<Aspect, 6> aspects = {{{"Match window / display",AspectMode
 // Dolphin post-processing shader shipped in Sys/Shaders/FXAA.glsl.
 constexpr const char* kFXAAShader = "FXAA";
 
-enum class Row { Scale, Aspect, HudLayout, FXAA, MetalHUD, Exit };
+enum class Row { Scale, Aspect, HudLayout, FXAA, Interpolation, MetalHUD, Exit };
 const std::vector<Row>& Rows() {
   static const std::vector<Row> rows = {Row::Scale, Row::Aspect, Row::HudLayout, Row::FXAA,
+    Row::Interpolation,
 #ifdef __APPLE__
     Row::MetalHUD,
 #endif
@@ -46,6 +47,7 @@ const char* RowLabel(Row row) {
   case Row::Aspect: return "Aspect ratio";
   case Row::HudLayout: return "HUD and menus";
   case Row::FXAA: return "FXAA";
+  case Row::Interpolation: return "120 FPS (experimental)";
   case Row::MetalHUD: return "Metal HUD";
   case Row::Exit: return "Exit The Game";
   }
@@ -96,6 +98,7 @@ struct OptionsMenu::Impl {
   int aspect_index = 0;
   bool center_hud = true;
   bool fxaa = false;
+  bool interpolation = false;
   bool confirm_exit = false;
   int exit_choice = 0;  // 0 = No (left, default), 1 = Yes (right)
   bool exiting = false;
@@ -117,6 +120,7 @@ struct OptionsMenu::Impl {
     metal_hud = LoadMetalHUDPreference(directory);
     center_hud = Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION);
     fxaa = Config::Get(Config::GFX_ENHANCE_POST_SHADER) == kFXAAShader;
+    interpolation = Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION);
     const int scale = Config::Get(Config::GFX_EFB_SCALE);
     scale_index = 0;
     for (int i=0; i<static_cast<int>(scales.size()); ++i)
@@ -185,6 +189,14 @@ struct OptionsMenu::Impl {
       ini.GetOrCreateSection("Enhancements")->Set("PostProcessingShader", std::string(fxaa ? kFXAAShader : ""));
     });
   }
+  void ApplyInterpolation() {
+    // Render-only: the game still runs at 59.94 Hz; the video thread draws an
+    // extra in-between frame. Needs a 120 Hz display. Takes effect next frame.
+    Config::SetBaseOrCurrent(Config::GFX_REFARE_FRAME_INTERPOLATION, interpolation);
+    SaveGraphics([&](Common::IniFile& ini) {
+      ini.GetOrCreateSection("Enhancements")->Set("RefareFrameInterpolation", interpolation);
+    });
+  }
   void ApplyMetalHUD() {
     SetMetalHUDVisible(render_view, metal_hud);
     Common::IniFile frontend;
@@ -205,6 +217,7 @@ struct OptionsMenu::Impl {
     }
     case Row::HudLayout: center_hud = !center_hud; ApplyHudLayout(); break;
     case Row::FXAA: fxaa = !fxaa; ApplyFXAA(); break;
+    case Row::Interpolation: interpolation = !interpolation; ApplyInterpolation(); break;
     case Row::MetalHUD: metal_hud = !metal_hud; ApplyMetalHUD(); break;
     case Row::Exit: break;  // Needs an explicit confirm, never a D-pad nudge.
     }
@@ -212,7 +225,7 @@ struct OptionsMenu::Impl {
   void Activate() {
     switch (CurrentRow()) {
     case Row::Exit: confirm_exit = true; exit_choice = 0; break;
-    case Row::HudLayout: case Row::FXAA: case Row::MetalHUD: Step(1); break;
+    case Row::HudLayout: case Row::FXAA: case Row::Interpolation: case Row::MetalHUD: Step(1); break;
     default: break;
     }
   }
@@ -228,6 +241,7 @@ struct OptionsMenu::Impl {
     case Row::Aspect: return aspects[aspect_index].label;
     case Row::HudLayout: return center_hud ? "Centered (4:3)" : "Stretched";
     case Row::FXAA: return fxaa ? "On" : "Off";
+    case Row::Interpolation: return interpolation ? "On" : "Off";
     case Row::MetalHUD: return metal_hud ? "On" : "Off";
     case Row::Exit: return "";
     }

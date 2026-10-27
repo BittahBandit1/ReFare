@@ -21,3 +21,4 @@ apply_patch lib/ModernGekko/vendor/dolphin recompcore-sprite-edge-clamp.patch
 apply_patch lib/ModernGekko/vendor/dolphin recompcore-gfx-trace.patch
 apply_patch lib/ModernGekko/vendor/dolphin recompcore-macos-focus.patch
 apply_patch lib/ModernGekko/vendor/dolphin recompcore-present-catch-up.patch
+apply_patch lib/ModernGekko/vendor/dolphin recompcore-frame-interpolation.patch

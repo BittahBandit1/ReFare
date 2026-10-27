@@ -122,6 +122,14 @@ int main(int argc, char** argv) {
     tap(refare::Right);
     Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER).empty(),"FXAA did not turn off");
     tap(refare::Right);
+    // 120 FPS (experimental): render-only frame interpolation, off by default.
+    tap(refare::Down);
+    Check(!Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation was not off by default");
+    tap(refare::Right);
+    Check(Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation did not turn on");
+    tap(refare::Confirm);
+    Check(!Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation did not turn off");
+    tap(refare::Right);
 #ifdef __APPLE__
     tap(refare::Down); tap(refare::Right);
     Check(!refare::LoadMetalHUDPreference(directory),"Metal HUD Off was not saved");
@@ -154,6 +162,9 @@ int main(int argc, char** argv) {
     graphics.GetOrCreateSection("Enhancements")->Get("PostProcessingShader",&post_shader);
     Check(!centered,"Stretched HUD choice was not saved");
     Check(post_shader=="FXAA","FXAA choice was not saved");
+    bool interpolation=false;
+    graphics.GetOrCreateSection("Enhancements")->Get("RefareFrameInterpolation",&interpolation);
+    Check(interpolation,"Interpolation choice was not saved");
     // Exit The Game: last row, needs explicit confirmation, No is the default.
     tap(refare::Toggle); tap(refare::Up);
     tap(refare::Right); tap(refare::Left);
@@ -183,5 +194,5 @@ int main(int argc, char** argv) {
   }
   Check(!refare::OptionsMenuBlocksInput(),"Destroyed menu blocks input");
   ImGui::DestroyContext(); Config::Shutdown();
-  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, exit confirmation, HUD default/toggle/persistence, and input release\n";
+  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, 120 FPS toggle, exit confirmation, HUD default/toggle/persistence, and input release\n";
 }
