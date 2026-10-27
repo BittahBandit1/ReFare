@@ -72,7 +72,7 @@ Buttons ReadButtons() {
       result[Back] |= held("Button E");
       result[Confirm] |= held("Button S");
     } else {
-      result[Toggle] |= held("F1");
+      result[Toggle] |= held("Tab");
       result[Up] |= held("Up Arrow") || held("Up");
       result[Down] |= held("Down Arrow") || held("Down");
       result[Left] |= held("Left Arrow") || held("Left");
@@ -349,7 +349,7 @@ struct OptionsMenu::Impl {
     ImGui::Separator(); ImGui::Spacing();
     ImGui::TextWrapped("Changes apply immediately and are saved.");
     ImGui::TextDisabled("D-pad: select / change     Cross: select     L1 or Circle: close");
-    ImGui::TextDisabled("Keyboard: F1, arrow keys, Enter, Escape");
+    ImGui::TextDisabled("Keyboard: Tab, arrow keys, Enter, Escape");
     if (!save_error.empty()) ImGui::TextWrapped("%s",save_error.c_str());
     if (ImGui::Button("Done",ImVec2(-1,34))) Close();
     ImGui::End();

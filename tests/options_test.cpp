@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     };
     frame(); Check(!refare::OptionsMenuBlocksInput(),"Closed menu blocks input");
     tap(refare::Toggle);
-    Check(refare::OptionsMenuBlocksInput(),"L1/F1 did not open menu");
+    Check(refare::OptionsMenuBlocksInput(),"L1/Tab did not open menu");
     Check(ImGui::GetDrawData()->TotalVtxCount>0,"Options overlay did not render");
     input[refare::Right]=true; frame(); frame(); frame();
     Check(Config::Get(Config::GFX_EFB_SCALE)==4,"Held button repeats unexpectedly or scale did not change");
@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
     Check(refare::OptionsMenuBlocksInput(),"Closing button leaks to game before release");
     input={}; frame(); Check(!refare::OptionsMenuBlocksInput(),"Input remains blocked after closing");
     tap(refare::Toggle); tap(refare::Toggle);
-    Check(!refare::OptionsMenuBlocksInput(),"L1/F1 close failed");
+    Check(!refare::OptionsMenuBlocksInput(),"L1/Tab close failed");
     Common::IniFile frontend,graphics;
     frontend.Load((directory/"config.ini").string());
     graphics.Load((directory/"Config/GFX.ini").string());

@@ -93,14 +93,15 @@ preserves unrelated GFX settings and keeps the first existing file as
 ## In-game options
 
 Press **L1** on a connected DualShock 4 (left shoulder on other SDL gamepads),
-or **F1** on the keyboard, to open the ReFare options overlay. It is available
+or **Tab** on the keyboard, to open the ReFare options overlay. It is available
 at the title screen and during play; no game-state addresses are assumed.
 
 - D-pad up/down selects resolution scale, aspect ratio, HUD and menus
-  (Centered/Stretched), FXAA, Metal HUD (macOS), or Exit The Game.
+  (Centered/Stretched), FXAA, 120 FPS (experimental), Metal HUD (macOS), or
+  Exit The Game.
 - D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
 - Exit The Game asks "Are you sure?" (No on the left, Yes on the right).
-- Circle or L1 closes the menu. Keyboard alternatives: arrow keys, Enter, and Escape/F1.
+- Circle or L1 closes the menu. Keyboard alternatives: arrow keys, Enter, and Escape/Tab.
 
 Cmd+Return toggles fullscreen. The game ignores input while another app (for
 example Spotlight) is active.
