@@ -4,6 +4,7 @@
 #import <dispatch/dispatch.h>
 #import <Foundation/Foundation.h>
 #include <pthread/qos.h>
+#include <atomic>
 
 namespace refare {
 void SetMetalHUDVisible(void* render_view, bool enabled) {
@@ -40,5 +41,21 @@ void KeepGameResponsive() {
 
 void PrioritizeCurrentThread() {
   pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+}
+
+double DisplayRefreshRate(void* render_view) {
+  // NSScreen must be read on the main thread; refresh the cached value about
+  // twice a second (the window can move to another display).
+  static std::atomic<double> s_rate{0.0};
+  static std::atomic<unsigned> s_calls{0};
+  if (render_view && (s_calls.fetch_add(1, std::memory_order_relaxed) % 60u) == 0u) {
+    NSView* view = (__bridge NSView*)render_view;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      NSScreen* screen = view.window.screen ?: NSScreen.mainScreen;
+      if (screen) s_rate.store(static_cast<double>(screen.maximumFramesPerSecond),
+                               std::memory_order_relaxed);
+    });
+  }
+  return s_rate.load(std::memory_order_relaxed);
 }
 }

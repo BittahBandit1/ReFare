@@ -122,14 +122,22 @@ int main(int argc, char** argv) {
     tap(refare::Right);
     Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER).empty(),"FXAA did not turn off");
     tap(refare::Right);
-    // 120 FPS (experimental): render-only frame interpolation, off by default.
+    // Interpolation: Off -> Match display -> 90/120/144/180 FPS, wrapping.
     tap(refare::Down);
     Check(!Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation was not off by default");
     tap(refare::Right);
-    Check(Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation did not turn on");
-    tap(refare::Confirm);
-    Check(!Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation did not turn off");
+    Check(Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION) &&
+          Config::Get(Config::GFX_REFARE_INTERPOLATION_TARGET)==0,"Match display was not selected");
     tap(refare::Right);
+    Check(Config::Get(Config::GFX_REFARE_INTERPOLATION_TARGET)==90,"90 FPS was not selected");
+    tap(refare::Confirm); tap(refare::Confirm); tap(refare::Confirm);
+    Check(Config::Get(Config::GFX_REFARE_INTERPOLATION_TARGET)==180,"180 FPS was not selected");
+    tap(refare::Right);
+    Check(!Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation did not wrap to Off");
+    tap(refare::Left);
+    Check(Config::Get(Config::GFX_REFARE_INTERPOLATION_TARGET)==180,"Left did not wrap to 180 FPS");
+    tap(refare::Left); tap(refare::Left); tap(refare::Left);
+    Check(Config::Get(Config::GFX_REFARE_INTERPOLATION_TARGET)==90,"Left did not step down");
     // V-Sync: live toggle, saved under [Hardware].
     tap(refare::Down);
     const bool vsync_before = Config::Get(Config::GFX_VSYNC);
@@ -172,6 +180,9 @@ int main(int argc, char** argv) {
     bool interpolation=false;
     graphics.GetOrCreateSection("Enhancements")->Get("RefareFrameInterpolation",&interpolation);
     Check(interpolation,"Interpolation choice was not saved");
+    int interp_target=0;
+    graphics.GetOrCreateSection("Enhancements")->Get("RefareInterpolationTarget",&interp_target);
+    Check(interp_target==90,"Interpolation rate was not saved");
     // Exit The Game: last row, needs explicit confirmation, No is the default.
     tap(refare::Toggle); tap(refare::Up);
     tap(refare::Right); tap(refare::Left);
@@ -201,5 +212,5 @@ int main(int argc, char** argv) {
   }
   Check(!refare::OptionsMenuBlocksInput(),"Destroyed menu blocks input");
   ImGui::DestroyContext(); Config::Shutdown();
-  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, 120 FPS and V-Sync toggles, exit confirmation, HUD default/toggle/persistence, and input release\n";
+  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, interpolation rates, V-Sync, exit confirmation, HUD default/toggle/persistence, and input release\n";
 }

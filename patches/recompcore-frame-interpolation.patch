@@ -1,8 +1,8 @@
 diff --git a/Source/Core/Core/Config/GraphicsSettings.cpp b/Source/Core/Core/Config/GraphicsSettings.cpp
-index 1eb34bf..c968c89 100644
+index 1eb34bf..abd987d 100644
 --- a/Source/Core/Core/Config/GraphicsSettings.cpp
 +++ b/Source/Core/Core/Config/GraphicsSettings.cpp
-@@ -227,4 +227,9 @@ const Info<bool> GFX_HACK_NO_MIPMAPPING{{System::GFX, "Hacks", "NoMipmapping"},
+@@ -227,4 +227,11 @@ const Info<bool> GFX_HACK_NO_MIPMAPPING{{System::GFX, "Hacks", "NoMipmapping"},
  
  const Info<bool> GFX_PERF_QUERIES_ENABLE{{System::GFX, "GameSpecific", "PerfQueriesEnable"}, false};
  
@@ -10,19 +10,23 @@ index 1eb34bf..c968c89 100644
 +
 +const Info<bool> GFX_REFARE_FRAME_INTERPOLATION{
 +    {System::GFX, "Enhancements", "RefareFrameInterpolation"}, false};
++const Info<int> GFX_REFARE_INTERPOLATION_TARGET{
++    {System::GFX, "Enhancements", "RefareInterpolationTarget"}, 0};
 +
  }  // namespace Config
 diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
-index d1bc17c..d60d363 100644
+index d1bc17c..94bc4ef 100644
 --- a/Source/Core/Core/Config/GraphicsSettings.h
 +++ b/Source/Core/Core/Config/GraphicsSettings.h
-@@ -197,6 +197,10 @@ extern const Info<bool> GFX_HACK_NO_MIPMAPPING;
+@@ -197,6 +197,12 @@ extern const Info<bool> GFX_HACK_NO_MIPMAPPING;
  
  extern const Info<bool> GFX_PERF_QUERIES_ENABLE;
  
 +// ReFare
 +
 +extern const Info<bool> GFX_REFARE_FRAME_INTERPOLATION;
++// 0 = match the display refresh rate; otherwise the output rate in Hz.
++extern const Info<int> GFX_REFARE_INTERPOLATION_TARGET;
 +
  // Android custom GPU drivers
  
@@ -93,7 +97,7 @@ index fc6f896..f279f4f 100644
    }
  
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index bf81554..aa1f038 100644
+index bf81554..0bff5c1 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -19,6 +19,7 @@
@@ -104,24 +108,26 @@ index bf81554..aa1f038 100644
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoConfig.h"
  #include "VideoCommon/VideoEvents.h"
-@@ -168,6 +169,47 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -168,6 +169,55 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
  void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
                         TimePoint presentation_time)
  {
-+  // ReFare frame interpolation: show the interpolated image (halfway between
-+  // the previous frame and this one) at the frame's slot, then the real frame
-+  // half a field later. Costs one 120 Hz frame of latency.
-+  RefareFrameInterpolation::Frame interp;
-+  if (fb_width != 0 && fb_height != 0 && RefareFrameInterpolation::TakeFrame(xfb_addr, &interp) &&
++  // ReFare frame interpolation: show this frame's in-between images (blended
++  // between the previous frame and this one), one per display refresh, then
++  // the real frame if it lands on a refresh of its own. Costs one refresh of
++  // latency.
++  RefareFrameInterpolation::FrameSet interp;
++  bool skip_real = false;
++  if (fb_width != 0 && fb_height != 0 && RefareFrameInterpolation::TakeFrames(xfb_addr, &interp) &&
 +      g_gfx->SupportsUtilityDrawing())
 +  {
-+    const auto half_field = std::chrono::duration_cast<DT>(std::chrono::microseconds(8342));
++    const auto period =
++        std::chrono::duration_cast<DT>(std::chrono::duration<double>(interp.period_s));
 +    const bool timed = presentation_time.time_since_epoch().count() != 0;
-+    // Frames reach the presenter after their slot (measured ~13 ms with the
-+    // replay running), so pace the pair from whichever is later: the slot or
-+    // now. The in-between frame goes out first, the real one half a field
-+    // after it. Only when badly behind (a stall) is the in-between frame
-+    // skipped, leaving the backlog to the normal catch-up logic.
++    // Frames reach the presenter after their slot (~13 ms with the replay
++    // running), so pace from whichever is later: the slot or now. Only when
++    // badly behind (a stall) are the in-between images skipped, leaving the
++    // backlog to the normal catch-up logic.
 +    const auto now = Clock::now();
 +    const auto lateness = timed ? now - presentation_time : DT{};
 +    const bool show = lateness < std::chrono::microseconds(41700);
@@ -129,30 +135,45 @@ index bf81554..aa1f038 100644
 +        show, std::chrono::duration<double, std::milli>(lateness).count());
 +    if (show)
 +    {
-+      const TimePoint base = timed ? std::max(presentation_time, now) : now;
-+      PresentInfo interp_info{
-+          .frame_count = m_frame_count,
-+          .present_count = m_present_count++,
-+          .reason = PresentInfo::PresentReason::Immediate,
-+          .emulated_timestamp = ticks,
-+          .intended_present_time = base,
-+      };
-+      m_refare_interp_texture = interp.texture;
-+      m_refare_interp_rect = interp.rect;
-+      Present(timed ? &interp_info : nullptr);
++      // When Metal paces (one refresh minimum per drawable), submit back to
++      // back; otherwise sleep one refresh between images on this thread.
++      const bool paced = RefareFrameInterpolation::BackendPacesFrames();
++      TimePoint when = timed ? std::max(presentation_time, now) : now;
++      for (int i = 0; i < interp.count; ++i)
++      {
++        PresentInfo interp_info{
++            .frame_count = m_frame_count,
++            .present_count = m_present_count++,
++            .reason = PresentInfo::PresentReason::Immediate,
++            .emulated_timestamp = ticks,
++            .intended_present_time = when,
++        };
++        m_refare_interp_texture = interp.textures[i];
++        m_refare_interp_rect = interp.rect;
++        Present(timed ? &interp_info : nullptr);
++        if (!paced)
++          when += period;
++      }
 +      m_refare_interp_texture = nullptr;
-+      // When Metal paces the pair, submit the real frame right away; it
-+      // stays queued until the in-between frame has had its 120 Hz slot.
 +      if (timed)
-+        presentation_time =
-+            RefareFrameInterpolation::BackendPacesPairs() ? base : base + half_field;
++        presentation_time = when;
++      skip_real = !interp.show_real;
 +    }
 +  }
 +
    bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
  
    PresentInfo present_info{
-@@ -970,7 +1012,15 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -210,7 +260,7 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
+ 
+   video_events.before_present_event.Trigger(present_info);
+ 
+-  if (!is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs)
++  if ((!is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs) && !skip_real)
+   {
+     Present(&present_info);
+     ProcessFrameDumping(ticks);
+@@ -970,7 +1020,15 @@ void Presenter::Present(PresentInfo* present_info)
    const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
  
    // Render the XFB to the screen.
@@ -169,7 +190,7 @@ index bf81554..aa1f038 100644
    {
      // Adjust the source rectangle instead of using an oversized viewport to render the XFB.
      MathUtil::Rectangle<int> render_target_rc = GetTargetRectangle();
-@@ -1005,7 +1055,7 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -1005,7 +1063,7 @@ void Presenter::Present(PresentInfo* present_info)
      g_gfx->PresentBackbuffer();
    }
  
@@ -195,15 +216,16 @@ index 91ba870..c041ec3 100644
  
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.cpp b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
 new file mode 100644
-index 0000000..e099255
+index 0000000..9de2bed
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
-@@ -0,0 +1,613 @@
+@@ -0,0 +1,715 @@
 +// ReFare: render-only frame interpolation. See RefareFrameInterpolation.h.
 +
 +#include "VideoCommon/RefareFrameInterpolation.h"
 +
 +#include <algorithm>
++#include <atomic>
 +#include <bit>
 +#include <cmath>
 +#include <cstdio>
@@ -290,11 +312,18 @@ index 0000000..e099255
 +  std::unordered_map<u64, std::vector<u32>> previous;
 +  bool have_previous = false;
 +
-+  std::unique_ptr<AbstractTexture> texture;
++  // Output pacing: display refreshes advanced per game frame accumulate in
++  // `phase`; each whole refresh crossed gets an image.
++  std::atomic<double> display_rate{0.0};
++  double phase = 0.0;
++  double paced_rate = 0.0;          // rate the Metal minimum duration is set for
++  double saved_min_duration = 0.0;  // ReFare's 60 Hz value, restored when off
++
++  std::unique_ptr<AbstractTexture> textures[kMaxInterpolated];
 +  std::mutex frame_mutex;
 +  bool frame_ready = false;
 +  u32 frame_addr = 0;
-+  MathUtil::Rectangle<int> frame_rect;
++  FrameSet frame_set;
 +
 +  u64 stats_frames = 0;
 +  u64 stats_loads = 0;
@@ -442,18 +471,93 @@ index 0000000..e099255
 +  return true;
 +}
 +
-+void EnsureTexture(u32 width, u32 height, u32 layers, AbstractTextureFormat format)
++AbstractTexture* EnsureTexture(int index, u32 width, u32 height, u32 layers,
++                               AbstractTextureFormat format)
++{
++  std::unique_ptr<AbstractTexture>& texture = S().textures[index];
++  if (texture)
++  {
++    const TextureConfig& c = texture->GetConfig();
++    if (c.width == width && c.height == height && c.layers == layers && c.format == format)
++      return texture.get();
++  }
++  texture = g_gfx->CreateTexture(TextureConfig(width, height, 1, layers, 1, format, 0,
++                                               AbstractTextureType::Texture_2DArray),
++                                 "ReFare interpolated frame");
++  return texture.get();
++}
++
++constexpr double kGameRate = 60000.0 / 1001.0;
++constexpr double kMaxOutputRate = 180.0;
++
++// The rate to interpolate to: the configured one, or the display's.
++double TargetRate()
 +{
 +  State& s = S();
-+  if (s.texture)
++  const int target = Config::Get(Config::GFX_REFARE_INTERPOLATION_TARGET);
++  const double display = s.display_rate.load(std::memory_order_relaxed);
++  double rate = target > 0 ? target : (display > 1.0 ? display : 120.0);
++  // More images than the display can show would just be thrown away.
++  if (display > 1.0)
++    rate = std::min(rate, display);
++  return std::clamp(rate, kGameRate, kMaxOutputRate);
++}
++
++// Metal with VSync keeps each drawable on screen for at least the configured
++// minimum duration, which ReFare sets to one 60 Hz frame on 60/120 Hz
++// displays. That would cap output at 60/s, so while interpolating it is set
++// to one output refresh and Metal itself spaces the images.
++void ApplyPacing(double rate)
++{
++  State& s = S();
++  if (rate == s.paced_rate)
++    return;
++  if (s.paced_rate == 0.0)
 +  {
-+    const TextureConfig& c = s.texture->GetConfig();
-+    if (c.width == width && c.height == height && c.layers == layers && c.format == format)
-+      return;
++    // Turning on: remember ReFare's value (only touched when it is in use).
++    const double current = Config::Get(Config::GFX_MTL_MINIMUM_PRESENT_DURATION);
++    s.saved_min_duration = current > 0.0 ? current : 0.0;
 +  }
-+  s.texture = g_gfx->CreateTexture(TextureConfig(width, height, 1, layers, 1, format, 0,
-+                                                 AbstractTextureType::Texture_2DArray),
-+                                   "ReFare interpolated frame");
++  s.paced_rate = rate;
++  if (rate > 0.0 && s.saved_min_duration > 0.0)
++  {
++    Config::SetCurrent(Config::GFX_MTL_MINIMUM_PRESENT_DURATION,
++                       std::max(0.0, 1.0 / rate - 0.0005));
++  }
++  else if (rate == 0.0 && s.saved_min_duration > 0.0)
++  {
++    Config::SetCurrent(Config::GFX_MTL_MINIMUM_PRESENT_DURATION, s.saved_min_duration);
++    s.saved_min_duration = 0.0;
++  }
++}
++
++// Blend weights for this game frame's in-between images (0 < t < 1, toward
++// the current frame), and whether the real frame lands on a refresh of its
++// own. E.g. 120 Hz: {0.5}+real; 180 Hz: {1/3, 2/3}+real; 90 Hz alternates
++// {2/3} and {1/3}+real.
++std::vector<float> PlanSlots(double rate, bool* show_real)
++{
++  State& s = S();
++  const double k = rate / kGameRate;  // display refreshes per game frame
++  // A refresh within this many refreshes of the real frame shows the real
++  // frame; keeps 120/180 Hz locked to exact fractions despite 59.94 vs 60.
++  constexpr double kSnap = 0.04;
++  std::vector<float> slots;
++  *show_real = false;
++  const double start = s.phase;
++  const double end = start + k;
++  for (double n = std::floor(start) + 1.0; n <= end + kSnap; n += 1.0)
++  {
++    if (n >= end - kSnap)
++    {
++      *show_real = true;
++      break;
++    }
++    if (slots.size() < static_cast<size_t>(kMaxInterpolated))
++      slots.push_back(static_cast<float>((n - start) / k));
++  }
++  s.phase = *show_real ? 0.0 : end - std::floor(end);
++  return slots;
 +}
 +}  // namespace
 +
@@ -465,37 +569,28 @@ index 0000000..e099255
 +  {
 +    s.enabled = enabled;
 +    Reset();
-+    // Metal with VSync keeps each drawable on screen for at least the
-+    // configured minimum duration, which ReFare sets to one 60 Hz frame on
-+    // 60/120 Hz displays. That caps presents at 60/s, and the back-pressure
-+    // stalls this thread. While interpolating, halve it to one 120 Hz frame
-+    // so Metal itself spaces the in-between and real frames.
-+    static double s_saved_min_duration = 0.0;
-+    if (enabled)
-+    {
-+      const double current = Config::Get(Config::GFX_MTL_MINIMUM_PRESENT_DURATION);
-+      if (current > 0.0)
-+      {
-+        s_saved_min_duration = current;
-+        Config::SetCurrent(Config::GFX_MTL_MINIMUM_PRESENT_DURATION,
-+                           std::max(0.0, (current + 0.0005) / 2.0 - 0.0005));
-+      }
-+    }
-+    else if (s_saved_min_duration > 0.0)
-+    {
-+      Config::SetCurrent(Config::GFX_MTL_MINIMUM_PRESENT_DURATION, s_saved_min_duration);
-+      s_saved_min_duration = 0.0;
-+    }
++    if (!enabled)
++      ApplyPacing(0.0);
 +    INFO_LOG_FMT(VIDEO, "ReFare frame interpolation {}", enabled ? "on" : "off");
 +  }
 +  return enabled;
 +}
 +
-+bool BackendPacesPairs()
++bool BackendPacesFrames()
 +{
 +  return S().enabled && g_backend_info.api_type == APIType::Metal &&
 +         g_ActiveConfig.bVSyncActive &&
 +         Config::Get(Config::GFX_MTL_MINIMUM_PRESENT_DURATION) > 0.0;
++}
++
++void SetDisplayRate(double hz)
++{
++  S().display_rate.store(hz, std::memory_order_relaxed);
++}
++
++double OutputRate()
++{
++  return Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION) ? TargetRate() : 0.0;
 +}
 +
 +bool IsReplaying()
@@ -661,11 +756,17 @@ index 0000000..e099255
 +    values.emplace(load.key, std::move(words));
 +  }
 +
-+  if (can_replay && !r.stream.empty())
++  const double rate = TargetRate();
++  ApplyPacing(rate);
++  bool show_real = true;
++  const std::vector<float> slots =
++      can_replay && !r.stream.empty() ? PlanSlots(rate, &show_real) : std::vector<float>{};
++
++  if (!slots.empty())
 +  {
-+    // Blend this frame's matrices halfway back toward the previous frame.
-+    std::vector<u8> stream = r.stream;
-+    u64 matched = 0, blended = 0;
++    // Matched loads worth blending: (load, previous frame's words).
++    std::vector<std::pair<const XFLoad*, const u32*>> blends;
++    u64 matched = 0;
 +    for (const XFLoad& load : r.loads)
 +    {
 +      if (load.key == 0)
@@ -674,81 +775,103 @@ index 0000000..e099255
 +      if (it == s.previous.end() || it->second.size() != load.count)
 +        continue;
 +      ++matched;
-+      const u32* prev = it->second.data();
-+      const u32* cur = values[load.key].data();
-+      if (!ShouldBlend(load.address, load.count, prev, cur))
-+        continue;
-+      ++blended;
-+      for (u32 i = 0; i < load.count; ++i)
-+      {
-+        if (!IsFloatWord(load.address + i))
-+          continue;
-+        const float p = std::bit_cast<float>(prev[i]);
-+        const float c = std::bit_cast<float>(cur[i]);
-+        const u32 mid = Common::swap32(std::bit_cast<u32>(0.5f * (p + c)));
-+        std::memcpy(&stream[load.offset + i * 4], &mid, 4);
-+      }
++      if (ShouldBlend(load.address, load.count, it->second.data(), values[load.key].data()))
++        blends.emplace_back(&load, it->second.data());
 +    }
 +    s.stats_loads += r.loads.size();
 +    s.stats_matched += matched;
-+    s.stats_blended += blended;
++    s.stats_blended += blends.size();
 +
-+    // Snapshot the end-of-frame state, rewind to the start of the frame and
-+    // render it again with the blended matrices.
++    // Snapshot the end-of-frame state; each image rewinds to the start of the
++    // frame and renders it again with matrices blended to its weight.
 +    g_vertex_manager->Flush();
 +    std::vector<u8> end_state = SaveGPUState();
-+    LoadGPUState(s.start_state);
++    std::vector<u8> stream;
++    MathUtil::Rectangle<int> out_rect;
++    int rendered = 0;
 +
-+    if (s.start_cleared)
++    for (const float t : slots)
 +    {
-+      BPFunctions::ClearScreen(g_framebuffer_manager.get(), s.start_clear_rect,
-+                               s.start_color_update, s.start_alpha_update,
-+                               s.start_z_update, s.start_pixel_format,
-+                               s.start_clear_ar, s.start_clear_gb, s.start_clear_z);
-+      BPFunctions::SetScissorAndViewport(g_framebuffer_manager.get(), bpmem.scissorTL,
-+                                         bpmem.scissorBR, bpmem.scissorOffset, xfmem.viewport);
-+    }
-+
-+    s.replaying = true;
-+    OpcodeDecoder::RunFifo<false>(DataReader(stream.data(), stream.data() + stream.size()),
-+                                  nullptr);
-+    g_vertex_manager->Flush();
-+    s.replaying = false;
-+
-+    // Keep a copy of the replayed EFB region for the presenter.
-+    MathUtil::Rectangle<int> rect = g_framebuffer_manager->ConvertEFBRectangle(src_rect);
-+    rect.ClampUL(0, 0, static_cast<int>(g_framebuffer_manager->GetEFBWidth()),
-+                 static_cast<int>(g_framebuffer_manager->GetEFBHeight()));
-+    AbstractTexture* efb = g_framebuffer_manager->ResolveEFBColorTexture(rect);
-+    if (efb && rect.GetWidth() > 0 && rect.GetHeight() > 0)
-+    {
-+      std::lock_guard lock(s.frame_mutex);
-+      EnsureTexture(rect.GetWidth(), rect.GetHeight(), g_framebuffer_manager->GetEFBLayers(),
-+                    efb->GetConfig().format);
-+      if (s.texture)
++      stream = r.stream;
++      for (const auto& [load, prev] : blends)
 +      {
-+        const MathUtil::Rectangle<int> dst{0, 0, rect.GetWidth(), rect.GetHeight()};
-+        for (u32 layer = 0; layer < g_framebuffer_manager->GetEFBLayers(); ++layer)
-+          s.texture->CopyRectangleFromTexture(efb, rect, layer, 0, dst, layer, 0);
-+        s.texture->FinishedRendering();
-+        s.frame_ready = true;
-+        s.frame_addr = dest_addr;
-+        s.frame_rect = dst;
++        const u32* cur = values[load->key].data();
++        for (u32 i = 0; i < load->count; ++i)
++        {
++          if (!IsFloatWord(load->address + i))
++            continue;
++          const float p = std::bit_cast<float>(prev[i]);
++          const float c = std::bit_cast<float>(cur[i]);
++          const u32 v = Common::swap32(std::bit_cast<u32>(p + (c - p) * t));
++          std::memcpy(&stream[load->offset + i * 4], &v, 4);
++        }
 +      }
++
++      LoadGPUState(s.start_state);
++      if (s.start_cleared)
++      {
++        BPFunctions::ClearScreen(g_framebuffer_manager.get(), s.start_clear_rect,
++                                 s.start_color_update, s.start_alpha_update,
++                                 s.start_z_update, s.start_pixel_format,
++                                 s.start_clear_ar, s.start_clear_gb, s.start_clear_z);
++        BPFunctions::SetScissorAndViewport(g_framebuffer_manager.get(), bpmem.scissorTL,
++                                           bpmem.scissorBR, bpmem.scissorOffset,
++                                           xfmem.viewport);
++      }
++
++      s.replaying = true;
++      OpcodeDecoder::RunFifo<false>(DataReader(stream.data(), stream.data() + stream.size()),
++                                    nullptr);
++      g_vertex_manager->Flush();
++      s.replaying = false;
++
++      // Keep a copy of the replayed EFB region for the presenter.
++      MathUtil::Rectangle<int> rect = g_framebuffer_manager->ConvertEFBRectangle(src_rect);
++      rect.ClampUL(0, 0, static_cast<int>(g_framebuffer_manager->GetEFBWidth()),
++                   static_cast<int>(g_framebuffer_manager->GetEFBHeight()));
++      AbstractTexture* efb = g_framebuffer_manager->ResolveEFBColorTexture(rect);
++      if (!efb || rect.GetWidth() <= 0 || rect.GetHeight() <= 0)
++        break;
++      std::lock_guard lock(s.frame_mutex);
++      AbstractTexture* texture =
++          EnsureTexture(rendered, rect.GetWidth(), rect.GetHeight(),
++                        g_framebuffer_manager->GetEFBLayers(), efb->GetConfig().format);
++      if (!texture)
++        break;
++      out_rect = {0, 0, rect.GetWidth(), rect.GetHeight()};
++      for (u32 layer = 0; layer < g_framebuffer_manager->GetEFBLayers(); ++layer)
++        texture->CopyRectangleFromTexture(efb, rect, layer, 0, out_rect, layer, 0);
++      texture->FinishedRendering();
++      ++rendered;
 +    }
 +
 +    LoadGPUState(end_state);
++
++    if (rendered > 0)
++    {
++      std::lock_guard lock(s.frame_mutex);
++      FrameSet& set = s.frame_set;
++      set.count = rendered;
++      for (int i = 0; i < rendered; ++i)
++        set.textures[i] = s.textures[i].get();
++      set.rect = out_rect;
++      // If an image failed, fall back to showing the real frame.
++      set.show_real = show_real || rendered < static_cast<int>(slots.size());
++      set.period_s = 1.0 / rate;
++      s.frame_ready = true;
++      s.frame_addr = dest_addr;
++    }
 +
 +    // Set REFARE_INTERP_STATS=1 to print match statistics every ~10 s.
 +    static const bool print_stats = std::getenv("REFARE_INTERP_STATS") != nullptr;
 +    if ((++s.stats_frames % 600) == 0 && print_stats)
 +    {
 +      std::fprintf(stderr,
-+                   "[refare] interpolation: %llu frames, %llu matrix loads, %.1f%% matched, "
++                   "[refare] interpolation: %.0f Hz, %llu frames, %llu matrix loads, %.1f%% matched, "
 +                   "%.1f%% blended, last stream %zu bytes\n"
 +                   "[refare]   presenter: %llu swaps, %llu frames ready, %llu shown, %llu dropped "
 +                   "late, %llu wrong XFB (vi %08x copy %08x), lateness avg %.1f max %.1f ms\n",
-+                   static_cast<unsigned long long>(s.stats_frames),
++                   rate, static_cast<unsigned long long>(s.stats_frames),
 +                   static_cast<unsigned long long>(s.stats_loads),
 +                   s.stats_loads ? 100.0 * s.stats_matched / s.stats_loads : 0.0,
 +                   s.stats_loads ? 100.0 * s.stats_blended / s.stats_loads : 0.0,
@@ -769,7 +892,7 @@ index 0000000..e099255
 +  s.have_previous = s.have_start && !r.overflow;
 +}
 +
-+bool TakeFrame(u32 xfb_addr, Frame* out)
++bool TakeFrames(u32 xfb_addr, FrameSet* out)
 +{
 +  State& s = S();
 +  std::lock_guard lock(s.frame_mutex);
@@ -780,12 +903,11 @@ index 0000000..e099255
 +    s.stats_last_xfb = xfb_addr;
 +    s.stats_last_copy = s.frame_addr;
 +  }
-+  if (!s.frame_ready || s.frame_addr != xfb_addr || !s.texture)
++  if (!s.frame_ready || s.frame_addr != xfb_addr || s.frame_set.count == 0)
 +    return false;
 +  s.frame_ready = false;
 +  ++s.stats_taken;
-+  out->texture = s.texture.get();
-+  out->rect = s.frame_rect;
++  *out = s.frame_set;
 +  return true;
 +}
 +
@@ -808,16 +930,17 @@ index 0000000..e099255
 +  s.have_start = false;
 +  s.have_previous = false;
 +  s.previous.clear();
++  s.phase = 0.0;
 +  std::lock_guard lock(s.frame_mutex);
 +  s.frame_ready = false;
 +}
 +}  // namespace RefareFrameInterpolation
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.h b/Source/Core/VideoCommon/RefareFrameInterpolation.h
 new file mode 100644
-index 0000000..fd08f70
+index 0000000..8d06887
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.h
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,79 @@
 +// ReFare: render-only frame interpolation (experimental, off by default).
 +//
 +// The game still runs its logic at 59.94 Hz. Each emulated frame's GPU command
@@ -860,20 +983,36 @@ index 0000000..fd08f70
 +// a new frame. `cleared` reports whether the copy cleared `clear_rect`.
 +void OnFrameStart(bool cleared, const MathUtil::Rectangle<int>& clear_rect);
 +
-+struct Frame
++// Most in-between images drawn per game frame (180 Hz output).
++constexpr int kMaxInterpolated = 3;
++
++// What the presenter shows for one game frame, in display order: `count`
++// in-between images, then the real frame if `show_real`. Each image is meant
++// to stay on screen for one display refresh (`period_s`).
++struct FrameSet
 +{
-+  const AbstractTexture* texture = nullptr;
++  int count = 0;
++  const AbstractTexture* textures[kMaxInterpolated] = {};
 +  MathUtil::Rectangle<int> rect;
++  bool show_real = true;
++  double period_s = 1.0 / 120.0;
 +};
 +
-+// Presenter side: the interpolated image that belongs before the real XFB at
-+// `xfb_addr`, if one was rendered. Consumes it.
-+bool TakeFrame(u32 xfb_addr, Frame* out);
++// Presenter side: the images that belong to the real XFB at `xfb_addr`, if
++// any were rendered. Consumes them.
++bool TakeFrames(u32 xfb_addr, FrameSet* out);
 +
-+// True when the video backend enforces a one-120 Hz-frame minimum display
-+// time per drawable (Metal + VSync). The presenter then submits the pair
++// The display's refresh rate as detected by the frontend (0 = unknown).
++// "Match display" interpolates to this rate.
++void SetDisplayRate(double hz);
++
++// Output rate interpolation is aiming for, in Hz (0 when off). For UI.
++double OutputRate();
++
++// True when the video backend enforces a one-refresh minimum display time
++// per drawable (Metal + VSync). The presenter then submits a frame's images
 +// back to back instead of sleeping between them on the video thread.
-+bool BackendPacesPairs();
++bool BackendPacesFrames();
 +
 +// Presenter-side statistics (REFARE_INTERP_STATS).
 +void NotePresent(bool shown, double lateness_ms);
