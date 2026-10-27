@@ -1,21 +1,8 @@
-diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
-index 831e044..5550234 100644
---- a/Source/Core/Core/Config/GraphicsSettings.h
-+++ b/Source/Core/Core/Config/GraphicsSettings.h
-@@ -106,6 +107,8 @@ extern const Info<bool> GFX_CPU_CULL;
- 
- extern const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS;
- extern const Info<TriState> GFX_MTL_USE_PRESENT_DRAWABLE;
-+// 0: backend default; -1: auto 60 Hz pacing on compatible display cadences.
-+extern const Info<double> GFX_MTL_MINIMUM_PRESENT_DURATION;
- 
- extern const Info<bool> GFX_SW_DUMP_OBJECTS;
- extern const Info<bool> GFX_SW_DUMP_TEV_STAGES;
 diff --git a/Source/Core/Core/Config/GraphicsSettings.cpp b/Source/Core/Core/Config/GraphicsSettings.cpp
-index fb7f6a8..40f86c5 100644
+index fb7f6a8..6e30d09 100644
 --- a/Source/Core/Core/Config/GraphicsSettings.cpp
 +++ b/Source/Core/Core/Config/GraphicsSettings.cpp
-@@ -123,6 +125,9 @@ const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS{
+@@ -123,6 +123,9 @@ const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS{
  const Info<TriState> GFX_MTL_USE_PRESENT_DRAWABLE{
      {System::GFX, "Settings", "MTLUsePresentDrawable"}, TriState::Auto};
  
@@ -25,20 +12,34 @@ index fb7f6a8..40f86c5 100644
  const Info<bool> GFX_SW_DUMP_OBJECTS{{System::GFX, "Settings", "SWDumpObjects"}, false};
  const Info<bool> GFX_SW_DUMP_TEV_STAGES{{System::GFX, "Settings", "SWDumpTevStages"}, false};
  const Info<bool> GFX_SW_DUMP_TEV_TEX_FETCHES{{System::GFX, "Settings", "SWDumpTevTexFetches"},
+diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
+index 831e044..42a0b4c 100644
+--- a/Source/Core/Core/Config/GraphicsSettings.h
++++ b/Source/Core/Core/Config/GraphicsSettings.h
+@@ -106,6 +106,8 @@ extern const Info<bool> GFX_CPU_CULL;
+ 
+ extern const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS;
+ extern const Info<TriState> GFX_MTL_USE_PRESENT_DRAWABLE;
++// 0: backend default; -1: auto 60 Hz pacing on compatible display cadences.
++extern const Info<double> GFX_MTL_MINIMUM_PRESENT_DURATION;
+ 
+ extern const Info<bool> GFX_SW_DUMP_OBJECTS;
+ extern const Info<bool> GFX_SW_DUMP_TEV_STAGES;
 diff --git a/Source/Core/VideoBackends/Metal/MTLGfx.mm b/Source/Core/VideoBackends/Metal/MTLGfx.mm
-index 4b744fe..fcefc54 100644
+index 4b744fe..a5c7a24 100644
 --- a/Source/Core/VideoBackends/Metal/MTLGfx.mm
 +++ b/Source/Core/VideoBackends/Metal/MTLGfx.mm
-@@ -2,6 +2,8 @@
+@@ -2,6 +2,9 @@
  // SPDX-License-Identifier: GPL-2.0-or-later
  
  #include "VideoBackends/Metal/MTLGfx.h"
++#include "VideoCommon/RefarePresentTimes.h"
 +#include "Common/Config/Config.h"
 +#include "Core/Config/GraphicsSettings.h"
  
  #include "VideoBackends/Metal/MTLBoundingBox.h"
  #include "VideoBackends/Metal/MTLObjectCache.h"
-@@ -455,6 +457,10 @@ static MTLTextureType FromAbstract(AbstractTextureType type, bool multisample)
+@@ -455,6 +458,10 @@ bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
      CheckForSurfaceChange();
      CheckForSurfaceResize();
      m_drawable = MRCRetain([m_layer nextDrawable]);
@@ -49,11 +50,15 @@ index 4b744fe..fcefc54 100644
      m_backbuffer->UpdateBackbufferTexture([m_drawable texture]);
      SetAndClearFramebuffer(m_backbuffer.get(), clear_color);
      return m_drawable != nullptr;
-@@ -473,7 +479,10 @@ static MTLTextureType FromAbstract(AbstractTextureType type, bool multisample)
+@@ -473,7 +480,14 @@ void Metal::Gfx::PresentBackbuffer()
        // On the other hand, it helps Xcode's GPU captures start and stop on frame boundaries
        // which is convenient.  Put it here as a default-off config, which we can override in Xcode.
        // It also seems to improve frame pacing, so enable it by default with vsync
 -      if (g_ActiveConfig.iUsePresentDrawable == TriState::On ||
++      // Record when each frame actually reaches the display (0 if dropped).
++      [m_drawable addPresentedHandler:^(id<MTLDrawable> drawable) {
++        RefarePresentTimes::Push(drawable.presentedTime);
++      }];
 +      const double minimum_duration = Config::Get(Config::GFX_MTL_MINIMUM_PRESENT_DURATION);
 +      if (g_ActiveConfig.bVSyncActive && minimum_duration > 0.0)
 +        [g_state_tracker->GetRenderCmdBuf() presentDrawable:m_drawable afterMinimumDuration:minimum_duration];
@@ -78,7 +83,7 @@ index ff8480e..28bac1a 100644
  #include "Common/MsgHandler.h"
  
  #include "VideoBackends/Metal/MTLBoundingBox.h"
-@@ -164,6 +167,17 @@ static bool WindowSystemTypeSupportsMetal(WindowSystemType type)
+@@ -164,6 +167,17 @@ void Metal::VideoBackend::PrepareWindow(WindowSystemInfo& wsi)
      return;
    NSView* view = static_cast<NSView*>(wsi.render_surface);
    CAMetalLayer* layer = [CAMetalLayer layer];
@@ -96,3 +101,40 @@ index ff8480e..28bac1a 100644
  
    Util::PopulateBackendInfo(&g_backend_info);
  
+diff --git a/Source/Core/VideoCommon/RefarePresentTimes.h b/Source/Core/VideoCommon/RefarePresentTimes.h
+new file mode 100644
+index 0000000..0050a4b
+--- /dev/null
++++ b/Source/Core/VideoCommon/RefarePresentTimes.h
+@@ -0,0 +1,31 @@
++// ReFare diagnostic: on-glass present times reported by the video backend
++// (Metal: MTLDrawable.presentedTime, in host-clock seconds). Lock-free ring
++// written by the presentation callback, read by the pacing recorder.
++#pragma once
++
++#include <array>
++#include <atomic>
++#include <cstdint>
++
++namespace RefarePresentTimes
++{
++struct Ring
++{
++  std::array<std::atomic<double>, 512> seconds{};
++  std::atomic<uint64_t> head{0};
++};
++
++inline Ring& Get()
++{
++  static Ring ring;
++  return ring;
++}
++
++inline void Push(double presented_seconds)
++{
++  Ring& ring = Get();
++  const uint64_t index = ring.head.load(std::memory_order_relaxed);
++  ring.seconds[index % ring.seconds.size()].store(presented_seconds, std::memory_order_relaxed);
++  ring.head.store(index + 1, std::memory_order_release);
++}
++}  // namespace RefarePresentTimes

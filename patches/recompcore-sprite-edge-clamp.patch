@@ -1,0 +1,153 @@
+diff --git a/Source/Core/Core/Config/GraphicsSettings.cpp b/Source/Core/Core/Config/GraphicsSettings.cpp
+index 40f86c5..1eb34bf 100644
+--- a/Source/Core/Core/Config/GraphicsSettings.cpp
++++ b/Source/Core/Core/Config/GraphicsSettings.cpp
+@@ -217,6 +217,8 @@ const Info<u32> GFX_HACK_MISSING_COLOR_VALUE{{System::GFX, "Hacks", "MissingColo
+                                              0xFFFFFFFF};
+ const Info<bool> GFX_HACK_FAST_TEXTURE_SAMPLING{{System::GFX, "Hacks", "FastTextureSampling"},
+                                                 true};
++const Info<bool> GFX_HACK_CLAMP_SPRITE_TEXTURE_EDGES{
++    {System::GFX, "Hacks", "ClampSpriteTextureEdges"}, false};
+ #ifdef __APPLE__
+ const Info<bool> GFX_HACK_NO_MIPMAPPING{{System::GFX, "Hacks", "NoMipmapping"}, false};
+ #endif
+diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
+index 5550234..d1bc17c 100644
+--- a/Source/Core/Core/Config/GraphicsSettings.h
++++ b/Source/Core/Core/Config/GraphicsSettings.h
+@@ -186,6 +186,9 @@ extern const Info<bool> GFX_HACK_VERTEX_ROUNDING;
+ extern const Info<bool> GFX_HACK_VI_SKIP;
+ extern const Info<u32> GFX_HACK_MISSING_COLOR_VALUE;
+ extern const Info<bool> GFX_HACK_FAST_TEXTURE_SAMPLING;
++// Clamp (instead of wrap) 2D sprite textures whose coordinates stay within 0..1, so
++// bilinear filtering at raised internal resolutions cannot bleed in the opposite edge.
++extern const Info<bool> GFX_HACK_CLAMP_SPRITE_TEXTURE_EDGES;
+ #ifdef __APPLE__
+ extern const Info<bool> GFX_HACK_NO_MIPMAPPING;
+ #endif
+diff --git a/Source/Core/VideoCommon/VertexManagerBase.cpp b/Source/Core/VideoCommon/VertexManagerBase.cpp
+index 2bc6d58..78e6fd3 100644
+--- a/Source/Core/VideoCommon/VertexManagerBase.cpp
++++ b/Source/Core/VideoCommon/VertexManagerBase.cpp
+@@ -8,6 +8,7 @@
+ #include <memory>
+ 
+ #include "Common/ChunkFile.h"
++#include "Common/Config/Config.h"
+ #include "Common/CommonTypes.h"
+ #include "Common/Contains.h"
+ #include "Common/EnumMap.h"
+@@ -15,6 +16,7 @@
+ #include "Common/MathUtil.h"
+ #include "Common/SmallVector.h"
+ 
++#include "Core/Config/GraphicsSettings.h"
+ #include "Core/DolphinAnalytics.h"
+ #include "Core/HW/SystemTimers.h"
+ #include "Core/System.h"
+@@ -640,6 +642,18 @@ void VertexManagerBase::Flush()
+     // Texture loading can cause palettes to be applied (-> uniforms -> draws).
+     // Palette application does not use vertices, only a full-screen quad, so this is okay.
+     // Same with GPU texture decoding, which uses compute shaders.
++    // Tiled 2D artwork (menus, logos, HUD) is drawn as one quad per texture with
++    // coordinates exactly spanning 0..1. Natively every pixel samples a texel
++    // center; when upscaled, wrap addressing blends in the opposite edge and
++    // leaves seams between tiles. Clamping is identical everywhere else.
++    if (Config::Get(Config::GFX_HACK_CLAMP_SPRITE_TEXTURE_EDGES) && IsUnitTexcoordSprite())
++    {
++      for (const u32 i : used_textures)
++      {
++        samplers[i].tm0.wrap_u = WrapMode::Clamp;
++        samplers[i].tm0.wrap_v = WrapMode::Clamp;
++      }
++    }
+     g_texture_cache->BindTextures(used_textures, samplers);
+ 
+     if (!skip)
+@@ -1165,3 +1179,72 @@ const AbstractPipeline* VertexManagerBase::GetCustomPipeline(
+ 
+   return nullptr;
+ }
++
++bool VertexManagerBase::IsUnitTexcoordSprite() const
++{
++  if (xfmem.projection.type != ProjectionType::Orthographic)
++    return false;
++  const u32 num_texgens = xfmem.numTexGen.numTexGens;
++  const NativeVertexFormat* format = VertexLoaderManager::GetCurrentVertexFormat();
++  const u32 num_verts = m_index_generator.GetNumVerts();
++  if (num_texgens == 0 || !format || num_verts == 0 || num_verts > 1024)
++    return false;
++  const PortableVertexDeclaration& decl = format->GetVertexDeclaration();
++  const u32 matrix_index[8] = {
++      xfmem.MatrixIndexA.Tex0MtxIdx, xfmem.MatrixIndexA.Tex1MtxIdx,
++      xfmem.MatrixIndexA.Tex2MtxIdx, xfmem.MatrixIndexA.Tex3MtxIdx,
++      xfmem.MatrixIndexB.Tex4MtxIdx, xfmem.MatrixIndexB.Tex5MtxIdx,
++      xfmem.MatrixIndexB.Tex6MtxIdx, xfmem.MatrixIndexB.Tex7MtxIdx};
++  std::array<int, 8> offsets{};
++  for (u32 i = 0; i < num_texgens; ++i)
++  {
++    const TexMtxInfo& info = xfmem.texMtxInfo[i];
++    const u32 row = static_cast<u32>(info.sourcerow.Value());
++    if (info.texgentype != TexGenType::Regular || info.projection != TexSize::ST ||
++        row < static_cast<u32>(SourceRow::Tex0) || row > static_cast<u32>(SourceRow::Tex7))
++    {
++      return false;
++    }
++    // Two float components only: a third one carries a per-vertex matrix index.
++    const AttributeFormat& tc = decl.texcoords[row - static_cast<u32>(SourceRow::Tex0)];
++    if (!tc.enable || tc.type != ComponentFormat::Float || tc.components != 2)
++      return false;
++    const float* m = &xfmem.posMatrices[matrix_index[i] * 4];
++    if (m[0] != 1.0f || m[1] != 0.0f || m[2] != 0.0f || m[3] != 0.0f || m[4] != 0.0f ||
++        m[5] != 1.0f || m[6] != 0.0f || m[7] != 0.0f)
++    {
++      return false;
++    }
++    // GXInit enables the dual (post) transform with an identity matrix; accept
++    // it only when it leaves s/t unchanged and does not normalize.
++    if (xfmem.dualTexTrans.enabled)
++    {
++      const PostMtxInfo& post = xfmem.postMtxInfo[i];
++      const float* pm = &xfmem.postMatrices[(post.index & 0x3f) * 4];
++      if (post.normalize || pm[0] != 1.0f || pm[1] != 0.0f || pm[2] != 0.0f || pm[3] != 0.0f ||
++          pm[4] != 0.0f || pm[5] != 1.0f || pm[6] != 0.0f || pm[7] != 0.0f)
++      {
++        return false;
++      }
++    }
++    offsets[i] = tc.offset;
++  }
++  constexpr float epsilon = 1.0f / 4096.0f;
++  for (u32 v = 0; v < num_verts; ++v)
++  {
++    const u8* vertex = m_base_buffer_pointer + static_cast<size_t>(v) * decl.stride;
++    for (u32 i = 0; i < num_texgens; ++i)
++    {
++      if (vertex + offsets[i] + 2 * sizeof(float) > m_cur_buffer_pointer)
++        return false;
++      float st[2];
++      std::memcpy(st, vertex + offsets[i], sizeof(st));
++      if (!(st[0] >= -epsilon && st[0] <= 1.0f + epsilon && st[1] >= -epsilon &&
++            st[1] <= 1.0f + epsilon))
++      {
++        return false;
++      }
++    }
++  }
++  return true;
++}
+diff --git a/Source/Core/VideoCommon/VertexManagerBase.h b/Source/Core/VideoCommon/VertexManagerBase.h
+index 715dbee..5395728 100644
+--- a/Source/Core/VideoCommon/VertexManagerBase.h
++++ b/Source/Core/VideoCommon/VertexManagerBase.h
+@@ -195,6 +195,9 @@ protected:
+   void CalculateNormals(NativeVertexFormat* format);
+ 
+   BitSet32 UsedTextures() const;
++  // True for an orthographic batch whose texture coordinates come straight from
++  // the vertices (identity texture matrices) and all lie within [0, 1].
++  bool IsUnitTexcoordSprite() const;
+ 
+   u8* m_cur_buffer_pointer = nullptr;
+   u8* m_base_buffer_pointer = nullptr;

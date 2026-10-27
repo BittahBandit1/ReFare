@@ -1,17 +1,5 @@
-diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
-index 831e044..5550234 100644
---- a/Source/Core/Core/Config/GraphicsSettings.h
-+++ b/Source/Core/Core/Config/GraphicsSettings.h
-@@ -31,6 +31,7 @@ extern const Info<int> GFX_ADAPTER;
- // Graphics.Settings
- 
- extern const Info<bool> GFX_WIDESCREEN_HACK;
-+extern const Info<bool> GFX_CENTER_ORTHOGRAPHIC_PROJECTION;
- extern const Info<AspectMode> GFX_ASPECT_RATIO;
- extern const Info<int> GFX_CUSTOM_ASPECT_RATIO_WIDTH;
- extern const Info<int> GFX_CUSTOM_ASPECT_RATIO_HEIGHT;
 diff --git a/Source/Core/Core/Config/GraphicsSettings.cpp b/Source/Core/Core/Config/GraphicsSettings.cpp
-index fb7f6a8..40f86c5 100644
+index 6e30d09..40f86c5 100644
 --- a/Source/Core/Core/Config/GraphicsSettings.cpp
 +++ b/Source/Core/Core/Config/GraphicsSettings.cpp
 @@ -19,6 +19,8 @@ const Info<int> GFX_ADAPTER{{System::GFX, "Hardware", "Adapter"}, 0};
@@ -23,8 +11,20 @@ index fb7f6a8..40f86c5 100644
  const Info<AspectMode> GFX_ASPECT_RATIO{{System::GFX, "Settings", "AspectRatio"}, AspectMode::Auto};
  const Info<int> GFX_CUSTOM_ASPECT_RATIO_WIDTH{{System::GFX, "Settings", "CustomAspectRatioWidth"},
                                                1};
+diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
+index 42a0b4c..5550234 100644
+--- a/Source/Core/Core/Config/GraphicsSettings.h
++++ b/Source/Core/Core/Config/GraphicsSettings.h
+@@ -31,6 +31,7 @@ extern const Info<int> GFX_ADAPTER;
+ // Graphics.Settings
+ 
+ extern const Info<bool> GFX_WIDESCREEN_HACK;
++extern const Info<bool> GFX_CENTER_ORTHOGRAPHIC_PROJECTION;
+ extern const Info<AspectMode> GFX_ASPECT_RATIO;
+ extern const Info<int> GFX_CUSTOM_ASPECT_RATIO_WIDTH;
+ extern const Info<int> GFX_CUSTOM_ASPECT_RATIO_HEIGHT;
 diff --git a/Source/Core/VideoCommon/VertexShaderManager.cpp b/Source/Core/VideoCommon/VertexShaderManager.cpp
-index 6d69803..63b6166 100644
+index 6d69803..017d935 100644
 --- a/Source/Core/VideoCommon/VertexShaderManager.cpp
 +++ b/Source/Core/VideoCommon/VertexShaderManager.cpp
 @@ -9,6 +9,8 @@
@@ -36,17 +36,18 @@ index 6d69803..63b6166 100644
  #include "Common/CommonTypes.h"
  #include "Common/Logging/Log.h"
  #include "Common/Matrix.h"
-@@ -30,6 +32,9 @@ void VertexShaderManager::Init()
+@@ -30,6 +32,10 @@ void VertexShaderManager::Init()
  {
    // Initialize state tracking variables
    m_projection_graphics_mod_change = false;
 +  m_last_projection_scale_x = 0.0f;
 +  m_last_projection_scale_y = 0.0f;
 +  m_last_center_orthographic = false;
++  m_last_screen_composite = false;
  
    constants = {};
  
-@@ -38,6 +43,25 @@ void VertexShaderManager::Init()
+@@ -38,6 +44,37 @@ void VertexShaderManager::Init()
    dirty = true;
  }
  
@@ -62,22 +63,35 @@ index 6d69803..63b6166 100644
 +  }
 +}
 +
++bool VertexShaderManager::IsScreenComposite(const ZMode& depth, const BlendMode& blend)
++{
++  // Crazy Taxi builds its shadow alpha mask in the world pass, then modulates
++  // the completed framebuffer with a depth-disabled screen-space texture.
++  // This pass must sample the whole viewport, never the centered HUD region.
++  return !depth.test_enable && !depth.update_enable && blend.blend_enable &&
++         !blend.subtract && blend.src_factor == SrcBlendFactor::Zero &&
++         blend.dst_factor == DstBlendFactor::SrcAlpha;
++}
++
 +bool VertexShaderManager::ProjectionPolicyChanged() const
 +{
 +  return m_last_projection_scale_x != g_ActiveConfig.fAspectRatioHackW ||
 +         m_last_projection_scale_y != g_ActiveConfig.fAspectRatioHackH ||
-+         m_last_center_orthographic != Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION);
++         m_last_center_orthographic != Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION) ||
++         (xfmem.projection.type == ProjectionType::Orthographic &&
++          m_last_screen_composite != IsScreenComposite(bpmem.zmode, bpmem.blendmode));
 +}
 +
  Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
  {
    const auto& rawProjection = xfmem.projection.rawProjection;
-@@ -97,6 +121,12 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
+@@ -97,6 +134,13 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
      m_projection_matrix[14] = 0.0f;
      m_projection_matrix[15] = 1.0f;
  
 +    if (g_ActiveConfig.bWidescreenHack &&
-+        Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION))
++        Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION) &&
++        !IsScreenComposite(bpmem.zmode, bpmem.blendmode))
 +    {
 +      CenterOrthographicProjection(m_projection_matrix, g_ActiveConfig.fAspectRatioHackW,
 +                                   g_ActiveConfig.fAspectRatioHackH);
@@ -85,17 +99,18 @@ index 6d69803..63b6166 100644
      g_stats.g2proj = m_projection_matrix;
      g_stats.proj = rawProjection;
    }
-@@ -109,6 +139,9 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
+@@ -109,6 +153,10 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
    PRIM_LOG("Projection: {} {} {} {} {} {}", rawProjection[0], rawProjection[1], rawProjection[2],
             rawProjection[3], rawProjection[4], rawProjection[5]);
  
 +  m_last_projection_scale_x = g_ActiveConfig.fAspectRatioHackW;
 +  m_last_projection_scale_y = g_ActiveConfig.fAspectRatioHackH;
 +  m_last_center_orthographic = Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION);
++  m_last_screen_composite = IsScreenComposite(bpmem.zmode, bpmem.blendmode);
    auto corrected_matrix = Common::Matrix44::FromArray(m_projection_matrix);
  
    if (g_freelook_camera.IsActive() && xfmem.projection.type == ProjectionType::Perspective)
-@@ -121,7 +154,7 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
+@@ -121,7 +169,7 @@ Common::Matrix44 VertexShaderManager::LoadProjectionMatrix()
  
  void VertexShaderManager::SetProjectionMatrix(XFStateManager& xf_state_manager)
  {
@@ -104,7 +119,7 @@ index 6d69803..63b6166 100644
    {
      xf_state_manager.ResetProjection();
      auto corrected_matrix = LoadProjectionMatrix();
-@@ -411,7 +444,7 @@ void VertexShaderManager::SetConstants(std::span<const std::string> textures,
+@@ -411,7 +459,7 @@ void VertexShaderManager::SetConstants(std::span<const std::string> textures,
      }
    }
  
@@ -114,26 +129,37 @@ index 6d69803..63b6166 100644
    {
      xf_state_manager.ResetProjection();
 diff --git a/Source/Core/VideoCommon/VertexShaderManager.h b/Source/Core/VideoCommon/VertexShaderManager.h
-index 600ba3b..f3f282f 100644
+index 600ba3b..3b61a8e 100644
 --- a/Source/Core/VideoCommon/VertexShaderManager.h
 +++ b/Source/Core/VideoCommon/VertexShaderManager.h
-@@ -35,6 +35,9 @@ public:
+@@ -12,6 +12,8 @@
+ #include "VideoCommon/ConstantManager.h"
+ #include "VideoCommon/NativeVertexFormat.h"
+ 
++union ZMode;
++union BlendMode;
+ class PointerWrap;
+ struct PortableVertexDeclaration;
+ class XFStateManager;
+@@ -35,6 +37,10 @@ public:
  
    static bool UseVertexDepthRange();
  
 +  // Scale clip-space XY about the center, retaining translation and depth.
++  static bool IsScreenComposite(const ZMode& depth, const BlendMode& blend);
 +  static void CenterOrthographicProjection(std::array<float, 16>& matrix, float x, float y);
 +
    VertexShaderConstants constants{};
    bool dirty = false;
  
-@@ -83,5 +86,9 @@ private:
+@@ -83,5 +89,10 @@ private:
    // track changes
    bool m_projection_graphics_mod_change = false;
  
 +  float m_last_projection_scale_x = 0.0f;
 +  float m_last_projection_scale_y = 0.0f;
 +  bool m_last_center_orthographic = false;
++  bool m_last_screen_composite = false;
 +  bool ProjectionPolicyChanged() const;
    Common::Matrix44 LoadProjectionMatrix();
  };

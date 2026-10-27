@@ -2,6 +2,8 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <dispatch/dispatch.h>
+#import <Foundation/Foundation.h>
+#include <pthread/qos.h>
 
 namespace refare {
 void SetMetalHUDVisible(void* render_view, bool enabled) {
@@ -23,5 +25,20 @@ void SetMetalHUDVisible(void* render_view, bool enabled) {
   };
   if ([NSThread isMainThread]) update();
   else dispatch_async(dispatch_get_main_queue(), update);
+}
+
+void KeepGameResponsive() {
+  static id<NSObject> activity = nil;
+  if (activity) return;
+  // Latency-critical: macOS must not nap or coalesce timers for the emulator
+  // when the window is in the background or covered by Spotlight.
+  activity = [[NSProcessInfo processInfo]
+      beginActivityWithOptions:(NSActivityUserInitiatedAllowingIdleSystemSleep |
+                                NSActivityLatencyCritical)
+                        reason:@"ReFare game emulation and frame presentation"];
+}
+
+void PrioritizeCurrentThread() {
+  pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 }
 }

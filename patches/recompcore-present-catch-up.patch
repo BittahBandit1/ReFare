@@ -1,0 +1,48 @@
+diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
+index 7c62730..bf81554 100644
+--- a/Source/Core/VideoCommon/Present.cpp
++++ b/Source/Core/VideoCommon/Present.cpp
+@@ -906,6 +906,43 @@ void Presenter::Present(PresentInfo* present_info)
+   if (g_gfx->IsHeadless() || (!m_onscreen_ui && !m_xfb_entry))
+     return;
+ 
++  // ReFare: after a stall (window/fullscreen transition, shader hitch, focus
++  // change) emulation keeps running while presentation waits, leaving frames
++  // queued in front of the display. Emulated 59.94 Hz versus a 60 Hz display
++  // drains such a backlog at only ~1 ms per second, so input latency stays high
++  // for a minute. Skip presenting stale frames until caught up: immediately when
++  // badly late, or when moderately late for half a second (a standing backlog).
++  // Single-frame hitches never trigger it; normal lateness is a few ms.
++  if (present_info &&
++      present_info->reason != PresentInfo::PresentReason::Immediate &&
++      present_info->intended_present_time.time_since_epoch().count() != 0)
++  {
++    using std::chrono::microseconds;
++    constexpr auto kSevere = microseconds(41700);    // 2.5 frames
++    constexpr auto kBacklog = microseconds(20000);   // ~1.2 frames
++    constexpr auto kCaughtUp = microseconds(8000);
++    constexpr int kSustainedFrames = 30;
++    static int s_late_frames = 0;
++    static bool s_catching_up = false;
++    static u64 s_skipped = 0;
++    const auto lateness = Clock::now() - present_info->intended_present_time;
++    s_late_frames = lateness > kBacklog ? s_late_frames + 1 : 0;
++    if (lateness > kSevere || s_late_frames >= kSustainedFrames)
++      s_catching_up = true;
++    else if (lateness < kCaughtUp)
++      s_catching_up = false;
++    if (s_catching_up)
++    {
++      if ((s_skipped++ % 60) == 0)
++      {
++        WARN_LOG_FMT(VIDEO, "Presentation {} ms late; skipping stale frames ({} total)",
++                     std::chrono::duration_cast<std::chrono::milliseconds>(lateness).count(),
++                     s_skipped);
++      }
++      return;
++    }
++  }
++
+   if (!g_gfx->SupportsUtilityDrawing())
+   {
+     // Video Software doesn't support drawing a UI or doing post-processing

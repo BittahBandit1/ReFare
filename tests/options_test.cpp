@@ -86,7 +86,8 @@ int main(int argc, char** argv) {
   io.Fonts->GetTexDataAsRGBA32(&pixels,&w,&h);
   refare::OptionsInput input{};
   {
-    refare::OptionsMenu menu(directory,[&]{return input;});
+    int exit_requests=0;
+    refare::OptionsMenu menu(directory,[&]{return input;},nullptr,[&]{++exit_requests;});
     const auto frame=[&] {
       ImGui::NewFrame(); GetVideoEvents().imgui_draw_event.Trigger(); ImGui::Render();
     };
@@ -108,11 +109,24 @@ int main(int argc, char** argv) {
     Check(Config::Get(Config::GFX_CUSTOM_ASPECT_RATIO_WIDTH)==16 && Config::Get(Config::GFX_CUSTOM_ASPECT_RATIO_HEIGHT)==9,"Custom aspect values incorrect");
     tap(refare::Left); tap(refare::Left);
     Check(Config::Get(Config::GFX_ASPECT_RATIO)==AspectMode::Stretch && Config::Get(Config::GFX_WIDESCREEN_HACK),"Window-following projection was not restored");
+    // HUD and menus: centered <-> stretched, live config + saved.
+    tap(refare::Down); tap(refare::Right);
+    Check(!Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION),"Stretched HUD was not applied");
+    tap(refare::Confirm);
+    Check(Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION),"Cross did not toggle HUD layout back");
+    tap(refare::Left);
+    Check(!Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION),"HUD layout Left did not toggle");
+    // FXAA: selects Dolphin's FXAA post-processing shader.
+    tap(refare::Down); tap(refare::Right);
+    Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER)=="FXAA","FXAA shader was not selected");
+    tap(refare::Right);
+    Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER).empty(),"FXAA did not turn off");
+    tap(refare::Right);
 #ifdef __APPLE__
     tap(refare::Down); tap(refare::Right);
     Check(!refare::LoadMetalHUDPreference(directory),"Metal HUD Off was not saved");
     tap(refare::Back); tap(refare::Toggle);
-    tap(refare::Up); // Wrap from scale to Metal HUD.
+    tap(refare::Up); tap(refare::Up); // Wrap from scale past Exit to Metal HUD.
     tap(refare::Left);
     Check(refare::LoadMetalHUDPreference(directory),"Metal HUD On was not saved after reopening");
     tap(refare::Right);
@@ -135,6 +149,26 @@ int main(int argc, char** argv) {
     Check(resolution=="2560x1440" && scale==4,"Scale was not saved for next launch");
     Check(aspect==3,"Aspect was not saved for next launch");
     Check(vsync && controller=="Preserved","Unrelated settings were overwritten");
+    bool centered=true; std::string post_shader;
+    graphics.GetOrCreateSection("Settings")->Get("CenterOrthographicProjection",&centered,true);
+    graphics.GetOrCreateSection("Enhancements")->Get("PostProcessingShader",&post_shader);
+    Check(!centered,"Stretched HUD choice was not saved");
+    Check(post_shader=="FXAA","FXAA choice was not saved");
+    // Exit The Game: last row, needs explicit confirmation, No is the default.
+    tap(refare::Toggle); tap(refare::Up);
+    tap(refare::Right); tap(refare::Left);
+    Check(exit_requests==0,"D-pad on Exit row exited without confirmation");
+    tap(refare::Confirm); tap(refare::Confirm);
+    Check(exit_requests==0 && refare::OptionsMenuBlocksInput(),"Default No exited or closed the menu");
+    tap(refare::Confirm); tap(refare::Right); tap(refare::Back);
+    Check(exit_requests==0 && refare::OptionsMenuBlocksInput(),"Circle on prompt exited or closed the menu");
+    tap(refare::Confirm); tap(refare::Right); tap(refare::Left); tap(refare::Confirm);
+    Check(exit_requests==0,"Moving back to No still exited");
+    tap(refare::Confirm); tap(refare::Right); tap(refare::Confirm);
+    Check(exit_requests==1,"Yes did not request exit exactly once");
+    Check(refare::OptionsMenuBlocksInput(),"Input leaked to the game while exiting");
+    tap(refare::Toggle); tap(refare::Confirm);
+    Check(exit_requests==1,"Menu kept acting after exit was requested");
     // The regular frontend writer must also preserve the saved HUD preference.
     auto config = moderngekko::frontend::LoadConfig(directory, false);
     Check(static_cast<bool>(config), "Frontend could not reload options");
@@ -149,5 +183,5 @@ int main(int argc, char** argv) {
   }
   Check(!refare::OptionsMenuBlocksInput(),"Destroyed menu blocks input");
   ImGui::DestroyContext(); Config::Shutdown();
-  std::cout << "PASS: overlay rendering, controls, live settings, HUD default/toggle/persistence, and input release\n";
+  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, exit confirmation, HUD default/toggle/persistence, and input release\n";
 }

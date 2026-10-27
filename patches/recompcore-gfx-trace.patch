@@ -1,0 +1,355 @@
+diff --git a/Source/Core/VideoCommon/BPStructs.cpp b/Source/Core/VideoCommon/BPStructs.cpp
+index 180bc86..d7f1cc1 100644
+--- a/Source/Core/VideoCommon/BPStructs.cpp
++++ b/Source/Core/VideoCommon/BPStructs.cpp
+@@ -30,6 +30,7 @@
+ #include "VideoCommon/PerfQueryBase.h"
+ #include "VideoCommon/PixelEngine.h"
+ #include "VideoCommon/PixelShaderManager.h"
++#include "VideoCommon/RefareGfxTrace.h"
+ #include "VideoCommon/Present.h"
+ #include "VideoCommon/Statistics.h"
+ #include "VideoCommon/TMEM.h"
+@@ -298,6 +299,21 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+     const u32 copy_width = srcRect.GetWidth();
+     const u32 copy_height = srcRect.GetHeight();
+ 
++    if (std::FILE* trace = RefareGfxTrace::Active())
++    {
++      std::fprintf(trace,
++                   "COPY #%llu %s src=[%d,%d %dx%d] dest=%08x stride=%u fmt=%d half=%d clear=%d "
++                   "depthfmt=%d yscale=%u pe=%08x zmode=%x blend=%x\n",
++                   RefareGfxTrace::Get().events++, PE_copy.copy_to_xfb ? "XFB" : "TEX",
++                   srcRect.left, srcRect.top, srcRect.GetWidth(), srcRect.GetHeight(), destAddr,
++                   destStride, static_cast<int>(PE_copy.tp_realFormat()),
++                   static_cast<int>(PE_copy.half_scale.Value()),
++                   static_cast<int>(PE_copy.clear.Value()),
++                   static_cast<int>(bpmem.zcontrol.pixel_format.Value()),
++                   static_cast<unsigned>(bpmem.dispcopyyscale), PE_copy.Hex, bpmem.zmode.hex,
++                   bpmem.blendmode.hex);
++    }
++
+     if (destStride != 0)
+     {
+       // Check if we are to copy from the EFB or draw to the XFB
+@@ -340,6 +356,7 @@ static void BPWritten(PixelShaderManager& pixel_shader_manager, XFStateManager&
+             destAddr, EFBCopyFormat::XFB, copy_width, height, destStride, is_depth_copy, srcRect,
+             false, false, yScale, s_gammaLUT[PE_copy.gamma], bpmem.triggerEFBCopy.clamp_top,
+             bpmem.triggerEFBCopy.clamp_bottom, bpmem.copyfilter.GetCoefficients());
++        RefareGfxTrace::OnFrameBoundary();
+ 
+         auto& system = Core::System::GetInstance();
+ 
+diff --git a/Source/Core/VideoCommon/RefareGfxTrace.h b/Source/Core/VideoCommon/RefareGfxTrace.h
+new file mode 100644
+index 0000000..f8b45cb
+--- /dev/null
++++ b/Source/Core/VideoCommon/RefareGfxTrace.h
+@@ -0,0 +1,88 @@
++// ReFare diagnostic: one-shot GPU command trace for game-specific render fixes.
++// Enabled only when REFARE_GFX_TRACE_DIR is set. Creating <dir>/trace-request
++// records the next few frames into <dir>/gfx-trace-N.txt. Zero cost otherwise
++// beyond a getenv check and one file-existence check per XFB copy.
++#pragma once
++
++#include <cstdio>
++#include <cstdlib>
++#include <filesystem>
++#include <string>
++
++namespace RefareGfxTrace
++{
++struct State
++{
++  std::FILE* file = nullptr;
++  int frames_left = 0;
++  int index = 0;
++  bool checked = false;
++  std::string dir;
++  unsigned long long events = 0;
++};
++
++inline State& Get()
++{
++  static State state;
++  return state;
++}
++
++inline const std::string& Dir()
++{
++  State& s = Get();
++  if (!s.checked)
++  {
++    s.checked = true;
++    if (const char* dir = std::getenv("REFARE_GFX_TRACE_DIR"))
++      s.dir = dir;
++  }
++  return s.dir;
++}
++
++inline std::FILE* Active()
++{
++  return Get().file;
++}
++
++// Call after each XFB copy. Ends the current traced frame, or begins tracing
++// when a request file is present.
++inline void OnFrameBoundary()
++{
++  State& s = Get();
++  const std::string& dir = Dir();
++  if (dir.empty())
++    return;
++  if (s.file)
++  {
++    std::fprintf(s.file, "=== XFB copy: end of frame (events=%llu) ===\n", s.events);
++    if (--s.frames_left <= 0)
++    {
++      std::fclose(s.file);
++      s.file = nullptr;
++    }
++    return;
++  }
++  namespace fs = std::filesystem;
++  std::error_code ec;
++  const fs::path request = fs::path(dir) / "trace-request";
++  if (!fs::exists(request, ec))
++    return;
++  int frames = 3;
++  if (std::FILE* req = std::fopen(request.string().c_str(), "r"))
++  {
++    int n = 0;
++    if (std::fscanf(req, "%d", &n) == 1 && n > 0 && n < 120)
++      frames = n;
++    std::fclose(req);
++  }
++  fs::remove(request, ec);
++  while (fs::exists(fs::path(dir) / ("gfx-trace-" + std::to_string(s.index) + ".txt"), ec))
++    ++s.index;
++  const fs::path out = fs::path(dir) / ("gfx-trace-" + std::to_string(s.index++) + ".txt");
++  s.file = std::fopen(out.string().c_str(), "w");
++  s.frames_left = frames;
++  s.events = 0;
++  if (s.file)
++    std::fprintf(s.file, "=== trace start: %d frames ===\n", frames);
++}
++}  // namespace RefareGfxTrace
+diff --git a/Source/Core/VideoCommon/VertexManagerBase.cpp b/Source/Core/VideoCommon/VertexManagerBase.cpp
+index 78e6fd3..f12c878 100644
+--- a/Source/Core/VideoCommon/VertexManagerBase.cpp
++++ b/Source/Core/VideoCommon/VertexManagerBase.cpp
+@@ -3,6 +3,12 @@
+ 
+ #include "VideoCommon/VertexManagerBase.h"
+ 
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <span>
++
+ #include <array>
+ #include <cmath>
+ #include <memory>
+@@ -36,6 +42,7 @@
+ #include "VideoCommon/PerfQueryBase.h"
+ #include "VideoCommon/PixelShaderGen.h"
+ #include "VideoCommon/PixelShaderManager.h"
++#include "VideoCommon/RefareGfxTrace.h"
+ #include "VideoCommon/Statistics.h"
+ #include "VideoCommon/TextureCacheBase.h"
+ #include "VideoCommon/VertexLoaderManager.h"
+@@ -434,6 +441,152 @@ BitSet32 VertexManagerBase::UsedTextures() const
+   return usedtextures;
+ }
+ 
++void VertexManagerBase::TraceDraw(std::FILE* trace, BitSet32 used_textures,
++                                  const VertexShaderManager& vertex_shader_manager)
++{
++  const auto& raw = xfmem.projection.rawProjection;
++  const auto& vp = xfmem.viewport;
++  const auto& P = vertex_shader_manager.constants.projection;
++  std::fprintf(trace,
++               "DRAW #%llu %s prim=%d verts=%u cull_all=%d raw=[%g %g %g %g %g %g] "
++               "vp=[wd %g ht %g xo %g yo %g zr %g fz %g] sc=[%x %x off %x] z=%x b=%x "
++               "gen=%x at=%x da=%x ztex=%x cull=%d\n",
++               RefareGfxTrace::Get().events++,
++               xfmem.projection.type == ProjectionType::Perspective ? "PERSP" : "ORTHO",
++               static_cast<int>(m_current_primitive_type), m_index_generator.GetNumVerts(),
++               m_cull_all ? 1 : 0, raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], vp.wd, vp.ht,
++               vp.xOrig, vp.yOrig, vp.zRange, vp.farZ, bpmem.scissorTL.hex, bpmem.scissorBR.hex,
++               bpmem.scissorOffset.hex, bpmem.zmode.hex, bpmem.blendmode.hex, bpmem.genMode.hex,
++               bpmem.alpha_test.hex, bpmem.dstalpha.hex, bpmem.ztex2.hex,
++               static_cast<int>(bpmem.genMode.cull_mode.Value()));
++  std::fprintf(trace, "  proj0=[%g %g %g %g] proj1=[%g %g %g %g]\n", P[0][0], P[0][1], P[0][2],
++               P[0][3], P[1][0], P[1][1], P[1][2], P[1][3]);
++  for (const u32 i : used_textures)
++  {
++    const auto entry = g_texture_cache->Load(i);
++    if (!entry)
++      continue;
++    std::fprintf(trace, "  tex%u addr=%08x %ux%u efbcopy=%d fmt=%d\n", i, entry->addr,
++                 entry->native_width, entry->native_height, entry->IsEfbCopy() ? 1 : 0,
++                 static_cast<int>(entry->format.texfmt));
++  }
++  // Texture coordinate generation, for diagnosing sampler/edge behavior.
++  const NativeVertexFormat* tc_format = VertexLoaderManager::GetCurrentVertexFormat();
++  std::fprintf(trace, "  texgens=%u dual=%d clampcfg=%d sprite=%d",
++               xfmem.numTexGen.numTexGens.Value(), xfmem.dualTexTrans.enabled ? 1 : 0,
++               Config::Get(Config::GFX_HACK_CLAMP_SPRITE_TEXTURE_EDGES) ? 1 : 0,
++               IsUnitTexcoordSprite() ? 1 : 0);
++  for (const u32 i : used_textures)
++  {
++    const SamplerState sampler = TextureCacheBase::GetSamplerState(i, 1.0f, false, false);
++    std::fprintf(trace, " samp%u[wrap %d,%d min %d mag %d]", i,
++                 static_cast<int>(sampler.tm0.wrap_u.Value()),
++                 static_cast<int>(sampler.tm0.wrap_v.Value()),
++                 static_cast<int>(sampler.tm0.min_filter.Value()),
++                 static_cast<int>(sampler.tm0.mag_filter.Value()));
++  }
++  std::fprintf(trace, "\n");
++  const u32 tc_matrix[8] = {
++      xfmem.MatrixIndexA.Tex0MtxIdx, xfmem.MatrixIndexA.Tex1MtxIdx,
++      xfmem.MatrixIndexA.Tex2MtxIdx, xfmem.MatrixIndexA.Tex3MtxIdx,
++      xfmem.MatrixIndexB.Tex4MtxIdx, xfmem.MatrixIndexB.Tex5MtxIdx,
++      xfmem.MatrixIndexB.Tex6MtxIdx, xfmem.MatrixIndexB.Tex7MtxIdx};
++  for (u32 i = 0; i < xfmem.numTexGen.numTexGens && i < 8; ++i)
++  {
++    const TexMtxInfo& info = xfmem.texMtxInfo[i];
++    const float* m = &xfmem.posMatrices[tc_matrix[i] * 4];
++    std::fprintf(trace,
++                 "  gen%u hex=%x type=%d src=%d proj=%d form=%d mtx=%u [%g %g %g %g | %g %g %g %g]\n",
++                 i, info.hex, static_cast<int>(info.texgentype.Value()),
++                 static_cast<int>(info.sourcerow.Value()), static_cast<int>(info.projection.Value()),
++                 static_cast<int>(info.inputform.Value()), tc_matrix[i], m[0], m[1], m[2], m[3],
++                 m[4], m[5], m[6], m[7]);
++    const PostMtxInfo& post = xfmem.postMtxInfo[i];
++    const float* pm = &xfmem.postMatrices[(post.index & 0x3f) * 4];
++    std::fprintf(trace, "    post idx=%u norm=%d [%g %g %g %g | %g %g %g %g]\n",
++                 post.index.Value(), post.normalize ? 1 : 0, pm[0], pm[1], pm[2], pm[3], pm[4],
++                 pm[5], pm[6], pm[7]);
++  }
++  if (tc_format)
++  {
++    const PortableVertexDeclaration& tc_decl = tc_format->GetVertexDeclaration();
++    for (u32 t = 0; t < 8; ++t)
++    {
++      const AttributeFormat& tc = tc_decl.texcoords[t];
++      if (!tc.enable)
++        continue;
++      float lo[2] = {1e30f, 1e30f}, hi[2] = {-1e30f, -1e30f};
++      if (tc.type == ComponentFormat::Float)
++      {
++        const u32 n = std::min<u32>(m_index_generator.GetNumVerts(), 4096);
++        for (u32 v = 0; v < n; ++v)
++        {
++          const u8* p = m_base_buffer_pointer + static_cast<size_t>(v) * tc_decl.stride + tc.offset;
++          if (p + 8 > m_cur_buffer_pointer)
++            break;
++          float st[2];
++          std::memcpy(st, p, sizeof(st));
++          for (int k = 0; k < 2; ++k)
++          {
++            lo[k] = std::min(lo[k], st[k]);
++            hi[k] = std::max(hi[k], st[k]);
++          }
++        }
++      }
++      std::fprintf(trace, "  tc%u type=%d comps=%d off=%d s[%g,%g] t[%g,%g]\n", t,
++                   static_cast<int>(tc.type), tc.components, tc.offset, lo[0], hi[0], lo[1], hi[1]);
++    }
++  }
++
++  // Screen-space bounds after the position matrix and the corrected projection.
++  const NativeVertexFormat* format = VertexLoaderManager::GetCurrentVertexFormat();
++  if (!format)
++    return;
++  const PortableVertexDeclaration& decl = format->GetVertexDeclaration();
++  if (!decl.position.enable || decl.position.type != ComponentFormat::Float)
++    return;
++  const u32 stride = decl.stride;
++  const u32 count = std::min<u32>(m_index_generator.GetNumVerts(), 4096);
++  const u32 mtx = xfmem.MatrixIndexA.PosNormalMtxIdx * 4;
++  const float* M = &xfmem.posMatrices[mtx];
++  float lo[2] = {1e30f, 1e30f}, hi[2] = {-1e30f, -1e30f};
++  float rlo[3] = {1e30f, 1e30f, 1e30f}, rhi[3] = {-1e30f, -1e30f, -1e30f};
++  u32 valid = 0;
++  for (u32 v = 0; v < count; ++v)
++  {
++    const u8* base = m_base_buffer_pointer + static_cast<size_t>(v) * stride + decl.position.offset;
++    if (base + 12 > m_cur_buffer_pointer)
++      break;
++    float pos[3] = {0, 0, 0};
++    std::memcpy(pos, base, sizeof(float) * std::min<u32>(decl.position.components, 3));
++    for (int k = 0; k < 3; ++k)
++    {
++      rlo[k] = std::min(rlo[k], pos[k]);
++      rhi[k] = std::max(rhi[k], pos[k]);
++    }
++    float world[4];
++    for (int r = 0; r < 3; ++r)
++      world[r] = M[r * 4 + 0] * pos[0] + M[r * 4 + 1] * pos[1] + M[r * 4 + 2] * pos[2] + M[r * 4 + 3];
++    world[3] = 1.0f;
++    float clip[4];
++    for (int r = 0; r < 4; ++r)
++      clip[r] = P[r][0] * world[0] + P[r][1] * world[1] + P[r][2] * world[2] + P[r][3] * world[3];
++    if (std::abs(clip[3]) < 1e-6f)
++      continue;
++    for (int k = 0; k < 2; ++k)
++    {
++      const float ndc = clip[k] / clip[3];
++      lo[k] = std::min(lo[k], ndc);
++      hi[k] = std::max(hi[k], ndc);
++    }
++    ++valid;
++  }
++  std::fprintf(trace,
++               "  raw_pos x[%g,%g] y[%g,%g] z[%g,%g] posmtx=%u permtx=%d ndc(%u) x[%g,%g] y[%g,%g]\n",
++               rlo[0], rhi[0], rlo[1], rhi[1], rlo[2], rhi[2], mtx / 4,
++               decl.posmtx.enable ? 1 : 0, valid, lo[0], hi[0], lo[1], hi[1]);
++}
++
+ void VertexManagerBase::Flush()
+ {
+   if (m_is_flushed)
+@@ -599,6 +752,8 @@ void VertexManagerBase::Flush()
+     }
+   }
+   vertex_shader_manager.SetConstants(texture_names, xf_state_manager);
++  if (std::FILE* trace = RefareGfxTrace::Active())
++    TraceDraw(trace, used_textures, vertex_shader_manager);
+   if (!bpmem.genMode.zfreeze)
+   {
+     // Must be done after VertexShaderManager::SetConstants()
+diff --git a/Source/Core/VideoCommon/VertexManagerBase.h b/Source/Core/VideoCommon/VertexManagerBase.h
+index 5395728..b2af0ae 100644
+--- a/Source/Core/VideoCommon/VertexManagerBase.h
++++ b/Source/Core/VideoCommon/VertexManagerBase.h
+@@ -3,6 +3,9 @@
+ 
+ #pragma once
+ 
++#include <cstdio>
++#include <span>
++
+ #include <memory>
+ #include <vector>
+ 
+@@ -20,6 +23,7 @@ class CustomShaderCache;
+ class DataReader;
+ class GeometryShaderManager;
+ class NativeVertexFormat;
++class VertexShaderManager;
+ class PixelShaderManager;
+ class PointerWrap;
+ struct PortableVertexDeclaration;
+@@ -107,6 +111,9 @@ public:
+   virtual bool Initialize();
+ 
+   PrimitiveType GetCurrentPrimitiveType() const { return m_current_primitive_type; }
++  // ReFare diagnostic trace of the current batch (see RefareGfxTrace.h).
++  void TraceDraw(std::FILE* trace, BitSet32 used_textures,
++                 const VertexShaderManager& vertex_shader_manager);
+   void AddIndices(OpcodeDecoder::Primitive primitive, u32 num_vertices);
+   bool AreAllVerticesCulled(VertexLoaderBase* loader, OpcodeDecoder::Primitive primitive,
+                             const u8* src, u32 count);

@@ -1,0 +1,18 @@
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+index e58579e..a72c271 100644
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -903,10 +903,9 @@ void DoFrameStep(Core::System& system)
+ 
+ void UpdateInputGate(bool require_focus, bool require_full_focus)
+ {
+-  // If the user accepts background input, controls should pass even if an on screen interface is on
+-  const bool focus_passes =
+-      !require_focus ||
+-      ((Host_RendererHasFocus() || Host_TASInputHasFocus()) && !Host_UIBlocksControllerState());
++  // Background input bypasses window focus, never an interface consuming controls.
++  const bool focus_passes = !Host_UIBlocksControllerState() &&
++      (!require_focus || Host_RendererHasFocus() || Host_TASInputHasFocus());
+   // Ignore full focus if we don't require basic focus
+   const bool full_focus_passes =
+       !require_focus || !require_full_focus || (focus_passes && Host_RendererHasFullFocus());

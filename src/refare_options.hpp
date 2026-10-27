@@ -4,13 +4,16 @@
 #include <filesystem>
 #include <memory>
 namespace refare {
-enum OptionsButton { Toggle, Up, Down, Left, Right, Back, Count };
+enum OptionsButton { Toggle, Up, Down, Left, Right, Back, Confirm, Count };
 using OptionsInput = std::array<bool, Count>;
 class OptionsMenu {
 public:
+  // request_exit is called (from the render thread) after the player confirms
+  // "Exit The Game". It must only request a shutdown, never block.
   explicit OptionsMenu(std::filesystem::path user_directory,
                        std::function<OptionsInput()> input_source = {},
-                       void* render_view = nullptr);
+                       void* render_view = nullptr,
+                       std::function<void()> request_exit = {});
   ~OptionsMenu();
 private:
   struct Impl;

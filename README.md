@@ -76,8 +76,8 @@ This uses the runtime's perspective-projection correction: wider windows reveal
 more of the 3D view instead of simply stretching it. HUD and menu projections
 retain their original proportions in a centered region. Narrow windows center
 the layout vertically; the 3D view still uses the runtime's vertical-view
-correction. The game still controls object culling, which may need separate
-fixes at wide ratios.
+correction. A built-in code mod widens the game's own view culling to match, so the sides
+of wide and ultrawide views stay populated.
 
 To restore the original 4:3 presentation:
 
@@ -96,9 +96,14 @@ Press **L1** on a connected DualShock 4 (left shoulder on other SDL gamepads),
 or **F1** on the keyboard, to open the ReFare options overlay. It is available
 at the title screen and during play; no game-state addresses are assumed.
 
-- D-pad up/down selects resolution scale, aspect ratio, or Metal HUD (macOS).
-- D-pad left/right changes the selected setting.
-- Circle or L1 closes the menu. Keyboard alternatives: arrow keys and Escape/F1.
+- D-pad up/down selects resolution scale, aspect ratio, HUD and menus
+  (Centered/Stretched), FXAA, Metal HUD (macOS), or Exit The Game.
+- D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
+- Exit The Game asks "Are you sure?" (No on the left, Yes on the right).
+- Circle or L1 closes the menu. Keyboard alternatives: arrow keys, Enter, and Escape/F1.
+
+Cmd+Return toggles fullscreen. The game ignores input while another app (for
+example Spotlight) is active.
 
 Resolution scales: 1x, 2x, 3x, 4x, 6x, 8x, and 12x. Aspect choices: match window,
 original 4:3, 16:9, 16:10, 21:9, and 32:9. Changes apply immediately and save in

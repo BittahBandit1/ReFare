@@ -1,0 +1,40 @@
+diff --git a/Source/Core/DolphinNoGUI/PlatformMacos.mm b/Source/Core/DolphinNoGUI/PlatformMacos.mm
+index e942282..98959d8 100644
+--- a/Source/Core/DolphinNoGUI/PlatformMacos.mm
++++ b/Source/Core/DolphinNoGUI/PlatformMacos.mm
+@@ -311,12 +311,33 @@ void PlatformMacOS::ProcessEvents()
+                                            inMode:NSDefaultRunLoopMode
+                                           dequeue:YES];
+ 
+-    [NSApp sendEvent:event];
++    // Game input reads the keyboard state directly. Plain key events have no
++    // responder in the render view, so AppKit would beep on every key press;
++    // only forward keys that carry Command, for menu shortcuts such as Cmd-Q.
++    const bool plain_key = event &&
++                           (event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp) &&
++                           !(event.modifierFlags & NSEventModifierFlagCommand);
++    // Cmd+Return (or Cmd+keypad Enter) toggles fullscreen, as in most Mac games.
++    const bool fullscreen_key = event && event.type == NSEventTypeKeyDown &&
++                                (event.modifierFlags & NSEventModifierFlagCommand) &&
++                                (event.keyCode == 36 || event.keyCode == 76);
++    if (fullscreen_key)
++    {
++      if (!event.isARepeat)
++        [m_window toggleFullScreen:nil];
++    }
++    else if (!plain_key)
++    {
++      [NSApp sendEvent:event];
++    }
+ 
+     // Need to update if m_window becomes fullscreen
+     m_window_fullscreen = [m_window styleMask] & NSWindowStyleMaskFullScreen;
+ 
+-    if ([m_window isMainWindow])
++    // A window stays "main" while another app's panel (Spotlight, Raycast,
++    // notification banners) takes the keyboard, and Quartz reads global key
++    // state. Only treat the game as focused while this app is active too.
++    if ([NSApp isActive] && [m_window isMainWindow])
+     {
+       m_window_focus = true;
+       if (Config::Get(Config::MAIN_SHOW_CURSOR) == Config::ShowCursor::Never &&
