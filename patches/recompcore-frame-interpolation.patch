@@ -93,7 +93,7 @@ index fc6f896..f279f4f 100644
    }
  
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index bf81554..b80e4c6 100644
+index bf81554..b381ce3 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -19,6 +19,7 @@
@@ -104,21 +104,27 @@ index bf81554..b80e4c6 100644
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoConfig.h"
  #include "VideoCommon/VideoEvents.h"
-@@ -168,6 +169,34 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -168,6 +169,40 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
  void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
                         TimePoint presentation_time)
  {
 +  // ReFare frame interpolation: show the interpolated image (halfway between
 +  // the previous frame and this one) at the frame's slot, then the real frame
-+  // half a field later. Costs one 120 Hz frame of latency. A late interpolated
-+  // frame is dropped rather than delaying the real one.
++  // half a field later. Costs one 120 Hz frame of latency. An interpolated
++  // frame that would land too close to the real one is dropped.
 +  RefareFrameInterpolation::Frame interp;
-+  if (fb_width != 0 && fb_height != 0 && g_gfx->SupportsUtilityDrawing() &&
-+      RefareFrameInterpolation::TakeFrame(xfb_addr, &interp))
++  if (fb_width != 0 && fb_height != 0 && RefareFrameInterpolation::TakeFrame(xfb_addr, &interp) &&
++      g_gfx->SupportsUtilityDrawing())
 +  {
 +    const auto half_field = std::chrono::duration_cast<DT>(std::chrono::microseconds(8342));
 +    const bool timed = presentation_time.time_since_epoch().count() != 0;
-+    if (!timed || Clock::now() - presentation_time < std::chrono::milliseconds(4))
++    // Frames normally reach the presenter a few ms after their slot, so allow
++    // the in-between frame until shortly before the real frame is due.
++    const auto lateness = timed ? Clock::now() - presentation_time : DT{};
++    const bool show = lateness < half_field - std::chrono::microseconds(1500);
++    RefareFrameInterpolation::NotePresent(
++        show, std::chrono::duration<double, std::milli>(lateness).count());
++    if (show)
 +    {
 +      PresentInfo interp_info{
 +          .frame_count = m_frame_count,
@@ -139,7 +145,7 @@ index bf81554..b80e4c6 100644
    bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
  
    PresentInfo present_info{
-@@ -970,7 +999,15 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -970,7 +1005,15 @@ void Presenter::Present(PresentInfo* present_info)
    const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
  
    // Render the XFB to the screen.
@@ -156,7 +162,7 @@ index bf81554..b80e4c6 100644
    {
      // Adjust the source rectangle instead of using an oversized viewport to render the XFB.
      MathUtil::Rectangle<int> render_target_rc = GetTargetRectangle();
-@@ -1005,7 +1042,7 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -1005,7 +1048,7 @@ void Presenter::Present(PresentInfo* present_info)
      g_gfx->PresentBackbuffer();
    }
  
@@ -182,10 +188,10 @@ index 91ba870..c041ec3 100644
  
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.cpp b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
 new file mode 100644
-index 0000000..9dee940
+index 0000000..0dcb846
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
-@@ -0,0 +1,548 @@
+@@ -0,0 +1,584 @@
 +// ReFare: render-only frame interpolation. See RefareFrameInterpolation.h.
 +
 +#include "VideoCommon/RefareFrameInterpolation.h"
@@ -286,6 +292,11 @@ index 0000000..9dee940
 +  u64 stats_loads = 0;
 +  u64 stats_matched = 0;
 +  u64 stats_blended = 0;
++  // Presenter side (since the last stats line).
++  u64 stats_taken = 0, stats_shown = 0, stats_late = 0, stats_addr_mismatch = 0;
++  u64 stats_swaps = 0;
++  double stats_lateness_ms = 0.0, stats_max_lateness_ms = 0.0;
++  u32 stats_last_xfb = 0, stats_last_copy = 0;
 +};
 +
 +State& S()
@@ -698,12 +709,23 @@ index 0000000..9dee940
 +    {
 +      std::fprintf(stderr,
 +                   "[refare] interpolation: %llu frames, %llu matrix loads, %.1f%% matched, "
-+                   "%.1f%% blended, last stream %zu bytes\n",
++                   "%.1f%% blended, last stream %zu bytes\n"
++                   "[refare]   presenter: %llu swaps, %llu frames ready, %llu shown, %llu dropped "
++                   "late, %llu wrong XFB (vi %08x copy %08x), lateness avg %.1f max %.1f ms\n",
 +                   static_cast<unsigned long long>(s.stats_frames),
 +                   static_cast<unsigned long long>(s.stats_loads),
 +                   s.stats_loads ? 100.0 * s.stats_matched / s.stats_loads : 0.0,
 +                   s.stats_loads ? 100.0 * s.stats_blended / s.stats_loads : 0.0,
-+                   r.stream.size());
++                   r.stream.size(), static_cast<unsigned long long>(s.stats_swaps),
++                   static_cast<unsigned long long>(s.stats_taken),
++                   static_cast<unsigned long long>(s.stats_shown),
++                   static_cast<unsigned long long>(s.stats_late),
++                   static_cast<unsigned long long>(s.stats_addr_mismatch), s.stats_last_xfb,
++                   s.stats_last_copy,
++                   s.stats_taken ? s.stats_lateness_ms / s.stats_taken : 0.0,
++                   s.stats_max_lateness_ms);
++      s.stats_swaps = s.stats_taken = s.stats_shown = s.stats_late = s.stats_addr_mismatch = 0;
++      s.stats_lateness_ms = s.stats_max_lateness_ms = 0.0;
 +    }
 +  }
 +
@@ -715,12 +737,32 @@ index 0000000..9dee940
 +{
 +  State& s = S();
 +  std::lock_guard lock(s.frame_mutex);
++  ++s.stats_swaps;
++  if (s.frame_ready && s.frame_addr != xfb_addr)
++  {
++    ++s.stats_addr_mismatch;
++    s.stats_last_xfb = xfb_addr;
++    s.stats_last_copy = s.frame_addr;
++  }
 +  if (!s.frame_ready || s.frame_addr != xfb_addr || !s.texture)
 +    return false;
 +  s.frame_ready = false;
++  ++s.stats_taken;
 +  out->texture = s.texture.get();
 +  out->rect = s.frame_rect;
 +  return true;
++}
++
++void NotePresent(bool shown, double lateness_ms)
++{
++  State& s = S();
++  std::lock_guard lock(s.frame_mutex);
++  if (shown)
++    ++s.stats_shown;
++  else
++    ++s.stats_late;
++  s.stats_lateness_ms += lateness_ms;
++  s.stats_max_lateness_ms = std::max(s.stats_max_lateness_ms, lateness_ms);
 +}
 +
 +void Reset()
@@ -736,10 +778,10 @@ index 0000000..9dee940
 +}  // namespace RefareFrameInterpolation
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.h b/Source/Core/VideoCommon/RefareFrameInterpolation.h
 new file mode 100644
-index 0000000..837d394
+index 0000000..9b7f3a7
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,58 @@
 +// ReFare: render-only frame interpolation (experimental, off by default).
 +//
 +// The game still runs its logic at 59.94 Hz. Each emulated frame's GPU command
@@ -791,6 +833,9 @@ index 0000000..837d394
 +// Presenter side: the interpolated image that belongs before the real XFB at
 +// `xfb_addr`, if one was rendered. Consumes it.
 +bool TakeFrame(u32 xfb_addr, Frame* out);
++
++// Presenter-side statistics (REFARE_INTERP_STATS).
++void NotePresent(bool shown, double lateness_ms);
 +
 +// Drops all recorded state (e.g. after a savestate load or setting change).
 +void Reset();
