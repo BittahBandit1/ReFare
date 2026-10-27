@@ -1,0 +1,10 @@
+{
+  "disc_id": "GCTE51",
+  "revision": 0,
+  "title": "Crazy Taxi",
+  "main_dol_sha256": "ca0e38f6b7d481fc512e4d67c8704261ce95a01ccc6a8680d963f6b8edd494d7",
+  "main_dol_size": 2190496,
+  "entry_point": "0x80003100",
+  "asset_file_count": 143,
+  "rel_files": []
+}

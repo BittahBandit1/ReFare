@@ -1,0 +1,18 @@
+{
+  "disc_id": "GCTE51",
+  "dol_sha256": "ca0e38f6b7d481fc512e4d67c8704261ce95a01ccc6a8680d963f6b8edd494d7",
+  "patches": [
+    {
+      "address": "0x80004420",
+      "expected": "0x4bfffe29",
+      "replacement": "0x60000000",
+      "purpose": "Skip only the copyright texture draw call, retaining texture-loader and frame initialization."
+    },
+    {
+      "address": "0x80003fa0",
+      "expected": "0x7f44d378",
+      "replacement": "0x4800022c",
+      "purpose": "After the Sega movie and pending Acclaim read finish, branch past Acclaim playback/audio to the normal finalization block."
+    }
+  ]
+}

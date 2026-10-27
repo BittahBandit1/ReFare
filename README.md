@@ -1,195 +1,175 @@
-# ModernGekko-Template
+# ReFare
 
-A template for building a static-recompilation pipeline for GameCube and Wii games, built on:
+Crazy Taxi (GameCube) static recompilation project using
+[ModernGekko-Template](https://github.com/ExpansionPak/ModernGekko-Template),
+[DolRecomp](https://github.com/ExpansionPak/DolRecomp), and
+[ModernGekko](https://github.com/ExpansionPak/ModernGekko).
 
-- [DolRecomp](https://github.com/ExpansionPak/DolRecomp) - static recompiler that turns a GameCube/Wii DOL into portable C or optimized native LLVM objects.
-- [ModernGekko](https://github.com/ExpansionPak/ModernGekko) - the runtime the recompiled C links against (built on a Dolphin-derived core for video/audio/HLE).
+macOS ARM64 is the first target. Windows and Linux remain planned targets using
+the same upstream CMake runtime and generated game code. Startup and title-screen rendering have been validated on macOS ARM64. Full
+gameplay coverage remains in progress. See [project status](docs/STATUS.md).
 
-Both are pulled in as git submodules under `lib/`. Everything is handled through the top-level `Makefile`. This repo has no game-specific code of its own, so it's a starting point for standing up a recompilation project for any GameCube or Wii title you own.
+## Build on Apple Silicon
 
-## Using This Template
+Install Xcode command line tools and `brew install cmake ninja pkg-config`.
+Then, from the project directory:
 
-Click **Use this template** on GitHub (or fork/clone it directly) to create your own project repo. Nothing in the `Makefile` or submodule setup needs to change to point it at a different game, just pass a different `ISO=` the first time you run it. Rename the repo to whatever fits your project.
-
-## Dependencies
-
-CMake, Ninja, and pkg-config, plus a C11/C++23 toolchain. DolRecomp and ModernGekko both build on macOS, Linux, and Windows; this repo's `Makefile` doesn't do anything platform-specific itself, it just drives the same CMake builds each submodule supports natively. `TOOLCHAIN` (see below) follows the compiler used to build ModernGekko.
-
-### Linux
-
-Ubuntu/Debian, matching what `lib/ModernGekko/vendor/dolphin`'s own CI installs for its NoGUI build (`.github/workflows/build.yml`):
-
-```
-sudo apt-get install -y ninja-build build-essential pkg-config cmake \
-  libevdev-dev libudev-dev libgtk-3-dev libsystemd-dev \
-  libbluetooth-dev libasound2-dev libpulse-dev libgl1-mesa-dev \
-  libxrandr-dev libxi-dev
-```
-
-`build-essential` pulls in GCC, the default toolchain on Linux.
-
-### macOS
-
-Via Homebrew:
-
-```
-brew install cmake ninja pkg-config
-```
-
-Xcode's command line tools are also required (AppleClang 14.0.3+; verified on AppleClang 17).
-
-### Windows
-
-Visual Studio 2022 (or the standalone Build Tools) with the "Desktop development with C++" workload, for the MSVC toolchain, plus CMake and Ninja on `PATH` (installable via winget/Chocolatey or their own installers). No external package manager is needed beyond that. Dolphin's Windows dependency tree (FFmpeg, SDL, etc.) is vendored as prebuilt binaries/source under `lib/ModernGekko/vendor/dolphin/Externals/`, unlike Linux where system `-dev` packages are expected.
-
-## Getting the Source
-
-```
-git clone --recurse-submodules https://github.com/<your-org>/<your-repo>.git
-cd <your-repo>
-```
-
-If you already cloned without `--recurse-submodules`, `make` will fetch them for you on first run. To do it manually instead:
-
-```
+```sh
 git submodule update --init --recursive
-```
-
-Run the build check at any time with:
-
-```
 make check
+make tools JOBS=8
 ```
 
-It verifies CMake, Ninja, Git, Python, working C11/C++23 compilers, and a
-64-bit target with 8-byte pointers. If the source submodules are absent, it
-offers to fetch them. Use `make check FETCH=1` for a non-interactive fetch,
-or `make check BACKEND=llvm` to validate LLVM 19/20 as well.
+The portable C backend is the initial baseline. The optional LLVM backend needs
+LLVM 19 or 20; it is not required for the first native ARM64 build.
 
-> [!NOTE]
-> `lib/ModernGekko` vendors a large chunk of Dolphin's dependency tree (SDL, fmt, imgui, Vulkan headers, etc.), so the first submodule sync takes a while and pulls a few hundred MB.
+## Prepare your disc
 
-## Recompile and Run
+For a GameCube block-map CISO, convert to a local sparse ISO:
 
-Bring your own legally-owned ISO, no game data is included in or downloaded by this repository. Works with any GameCube or Wii disc; there is no default game, so `ISO=` (or an already-extracted `GAME=`) is required. Point `ISO` at a dump and run:
-
-```
-make run ISO=/path/to/Your\ Game.iso
+```sh
+mkdir -p iso
+python3 scripts/ciso-to-iso.py '/path/to/Crazy Taxi (USA).ciso' iso/Crazy-Taxi-USA.iso
+make extract ISO=iso/Crazy-Taxi-USA.iso
 ```
 
-This builds DolRecomp and ModernGekko, extracts the ISO, recompiles `main.dol` to C, compiles the result into a native module, and launches the game in a window.
+For an existing ISO, pass its path directly to `make extract ISO=...`.
+The initial supported revision is USA `GCTE51`, revision 0. Disc metadata and
+main executable hash are recorded in [disc-profile.json](docs/disc-profile.json).
+No disc image, extracted assets, or generated game code is tracked by Git.
+Keep your personal dump outside the source tree or under the ignored `iso/` directory.
 
-For the optimized LLVM backend:
+## Recompile and run
 
-```
-make llvm-run ISO=/path/to/Your\ Game.iso
-```
+Once extracted:
 
-`make llvm` builds the module without launching it. DolRecomp emits native
-objects, and RecompCore's module template discovers the generated object
-manifest and links every object into the game module automatically. LLVM is
-only needed while building; the resulting game module has no LLVM runtime
-dependency.
-
-Each game gets its own directory under `extracted/<slug>/`, where `<slug>` is derived from the ISO's filename, so multiple games coexist without clobbering each other. `ISO` is only needed the first time per game, once extracted, run it again by slug instead:
-
-```
-make run ISO=iso/Your\ Game.iso        # first time for a new game
-make run GAME=Your-Game-Slug           # afterwards
+```sh
+make configure-video
+make recompile GAME=Crazy-Taxi-USA JOBS=8
+make run GAME=Crazy-Taxi-USA JOBS=8 RUN_ARGS="--graphics Metal --user-dir build/user"
 ```
 
-Drop ISOs under `iso/` at the repo root (gitignored) for a stable local path.
+These commands build the runtime, generate game code, compile a native module,
+and (for `run`) start the runner. A successful compile alone does not establish
+that gameplay, graphics, sound, or controllers work correctly.
 
-To just build the tools without touching a game, or to produce the compiled module without launching it:
+## Portability
 
-```
-make tools
-make recompile ISO=/path/to/game.iso
-```
+On macOS the Makefile defaults to `CMAKE_OSX_ARCHITECTURES=arm64`. This flag is
+omitted on other systems. `CMAKE_PLATFORM_ARGS` can override it. Local CMake
+quoting patches are applied automatically by `make` (see `patches/`). GameCube
+extraction does not download Wii extraction tools. No platform-specific game
+patches have been introduced.
 
-`moderngekko-port` caches compiled modules by DOL hash and toolchain identity, so re-running `recompile`/`run` after the first build is cheap, it hits cache instead of recompiling.
+[The original template guide](docs/UPSTREAM-TEMPLATE.md) covers other platforms,
+LLVM, controller profiles, build variables, and upstream component licenses.
 
-> [!NOTE]
-> Wii ISOs need [Wiimms ISO Tools](https://wit.wiimm.de/) (`wit`) for extraction, `make` downloads it automatically into `extern/wit` on first use. GameCube extraction is built into DolRecomp directly and doesn't need this.
+## Arbitrary aspect ratios
 
-## Makefile Targets
+`make configure-video` enables a window-following aspect ratio in `build/user`.
+Restart the runner after applying it. Resize the window or enter fullscreen to
+match the display, including 16:10, 16:9, and ultrawide proportions. No native
+module rebuild is required. The internal rendering resolution is independent of
+the window's aspect ratio.
 
-Run `make help` (or just `make`, the default target) for this list:
+This uses the runtime's perspective-projection correction: wider windows reveal
+more of the 3D view instead of simply stretching it. HUD and menu projections
+retain their original proportions in a centered region. Narrow windows center
+the layout vertically; the 3D view still uses the runtime's vertical-view
+correction. The game still controls object culling, which may need separate
+fixes at wide ratios.
 
-| Target       | Description                                                |
-|--------------|--------------------------------------------------------------|
-| `check`      | Validate build tools, compilers, architecture, and sources  |
-| `tools`      | Build DolRecomp and ModernGekko                             |
-| `extract`    | Extract a GameCube/Wii ISO into `extracted/<slug>/`         |
-| `recompile`  | Recompile + compile a runnable module                       |
-| `run`        | Recompile (if needed) and launch the game                   |
-| `llvm`       | Build an optimized LLVM object module                       |
-| `llvm-run`   | Build an LLVM object module and launch the game             |
-| `clean`      | Remove all build output                                     |
+To restore the original 4:3 presentation:
 
-## Variables
-
-| Variable           | Default                                    | Description                                              |
-|--------------------|--------------------------------------------|----------------------------------------------------------|
-| `ISO`              | *(none)*                                   | Path to a game ISO. Required the first time per game, also determines that game's slug. |
-| `GAME`             | *(none)*                                   | Select an already-extracted game by slug instead of `ISO=`. Required if `ISO` isn't given. |
-| `JOBS`             | detected CPU count                         | Parallel build jobs passed to CMake/Ninja.                |
-| `CMAKE_BUILD_TYPE` | `Release`                                  | Passed to both submodule builds.                          |
-| `BUILD_TESTING`    | `OFF`                                      | Build developer test targets alongside production tools. |
-| `BACKEND`          | `c`                                        | Generated-code backend: `c` or `llvm`.                    |
-| `LLVM_DIR`         | *(CMake discovery)*                        | Optional path to LLVM 19/20's CMake package.              |
-| `RUN_ARGS`         | *(empty)*                                  | Extra flags forwarded to `moderngekko-run` via `make run`, e.g. `--headless`, `--graphics Vulkan`. |
-| `TOOLCHAIN`        | `auto`                                      | Compiler for the per-game module: `auto`, `clang`, `gcc`, or `msvc`. See "Toolchain" below. |
-
-For example, to force a debug build with extra runner flags:
-
-```
-CMAKE_BUILD_TYPE=Debug make run ISO=/path/to/game.iso RUN_ARGS="--headless"
+```sh
+make configure-video ASPECT=original
 ```
 
-## LLVM Backend
+For a different runtime profile use `USER_DIR=/path/to/user` with this target and
+pass that same directory through the runner's `--user-dir` argument. The helper
+preserves unrelated GFX settings and keeps the first existing file as
+`GFX.ini.before-refare`.
 
-DolRecomp supports LLVM 19 and 20. If it is installed outside CMake's normal
-search path, point the template at its package directory:
+## In-game options
 
+Press **L1** on a connected DualShock 4 (left shoulder on other SDL gamepads),
+or **F1** on the keyboard, to open the ReFare options overlay. It is available
+at the title screen and during play; no game-state addresses are assumed.
+
+- D-pad up/down selects resolution scale, aspect ratio, or Metal HUD (macOS).
+- D-pad left/right changes the selected setting.
+- Circle or L1 closes the menu. Keyboard alternatives: arrow keys and Escape/F1.
+
+Resolution scales: 1x, 2x, 3x, 4x, 6x, 8x, and 12x. Aspect choices: match window,
+original 4:3, 16:9, 16:10, 21:9, and 32:9. Changes apply immediately and save in
+the active user directory. Fixed wide ratios use projection correction and fit
+inside the current window; match-window mode follows arbitrary window sizes.
+The game-culling limitations described above still apply.
+
+On macOS, **Metal HUD** defaults to **On**. Its menu toggle changes visibility
+live and saves the choice as `metal_hud` in the profile's `config.ini`. A saved
+Off choice remains off on subsequent launches. This controls Apple's HUD for
+ReFare's Metal layer; no system-wide preferences are changed. Launch with the
+Metal backend to display it.
+
+The runtime automatically maps a detected SDL gamepad to GameCube port 1,
+prioritizing a DualShock 4 and retaining keyboard controls. It checks for
+reconnection and preserves hand-authored profiles. The raw L1 overlay binding
+is independent of the game's pad mapping. The overlay does not
+pause the game, but blocks ordinary game input while open using the runtime's
+UI input gate (with the default foreground-input mode).
+
+The menu code lives in `src/`; small recorded runtime patches attach it to the
+existing renderer. Build it with the usual `make run` command. To run its
+focused rendering/state/persistence test:
+
+```sh
+cmake --build lib/ModernGekko/build --target refare-options-test
+lib/ModernGekko/build/refare-options-test build/options-unit-test
 ```
-make llvm GAME=Your-Game-Slug LLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm
-make llvm-run GAME=Your-Game-Slug LLVM_DIR=/usr/lib/llvm-19/lib/cmake/llvm
-```
 
-The portable C backend remains the default and is always available:
+## Startup skips and controller setup
 
-```
-make recompile GAME=Your-Game-Slug BACKEND=c
-```
+The normal `make run` path creates a separate revision-checked copy under
+`build/games/` and skips the copyright display and Acclaim Cheltenham movie.
+The Sega movie remains. The original disc image and extraction are untouched.
+The copyright texture still loads for initialization, but its draw is suppressed.
+To run the original startup sequence, add `SKIP_STARTUP=0` to `make run`.
 
-## Toolchain
+Connect the DualShock 4 before launching, or reconnect it while the game runs.
+The runtime creates `Config/GCPadNew.ini` in the selected user directory if no
+custom mapping exists. On DS4: Cross=A, Circle=B, Square=X, Triangle=Y,
+Options=Start, R1=Z, L2/R2=GameCube triggers, and the sticks/D-pad map normally.
+L1 opens ReFare Options. Existing keyboard bindings are retained alongside it.
+Automatic profiles have `[ReFare] AutoConfigured=True`; set this to False after
+making custom changes if you want the runtime to leave the profile alone.
 
-The default `TOOLCHAIN=auto` follows the compiler used to build `moderngekko-port`.
-This keeps an MSVC build on MSVC and an MSYS2/MinGW build on GCC or Clang instead
-of assuming that Visual Studio's `cl` is available.
+## Frame pacing
 
-Override it either way with `TOOLCHAIN=`:
+New profiles default to VSync, precise timing, and presentation smoothing.
+On Metal with a 60/120 Hz-compatible display, a minimum presentation duration
+prevents recurring short/long display intervals. Other display cadences retain
+the normal presentation path. Fast-forward with VSync inactive is not capped
+by this path. The overlay no longer polls devices on the rendering thread.
 
-```
-make run ISO=/path/to/game.iso TOOLCHAIN=clang   # try clang on Linux anyway
-make run ISO=/path/to/game.iso TOOLCHAIN=auto    # let moderngekko-port pick
-```
+Explicit user settings are respected. In `Config/GFX.ini`, the optional
+`[Settings] MTLMinimumPresentDuration` value is -1 for automatic 60 Hz pacing,
+0 to disable the minimum-duration policy, or a duration in seconds. Automatic
+selection uses the display associated with the window at renderer startup.
+Restart after changing to a display with a different refresh cadence.
 
-Module builds are cached by DOL hash *and* toolchain identity, so switching `TOOLCHAIN` between runs produces a separate cache entry rather than clobbering a previous build.
+See [performance validation](docs/PERFORMANCE.md) for measured results and limits.
 
-## Controller Input
+## Centered HUD and menus
 
-ModernGekko has no in-app controller configuration UI (same as Dolphin's NoGUI frontend it's built on), bindings come from `Config/GCPadNew.ini` / `Config/WiimoteNew.ini` in ModernGekko's user directory (`~/.local/share/moderngekko/Config/` by default), which nothing in this pipeline creates for you. Without one, GameCube pad input silently does nothing. You'll need to hand-author or copy in a working ini, Dolphin's ini format and key names are stable and documented by the project itself.
+The default `CenterOrthographicProjection=True` in `Config/GFX.ini` centers the
+original 2D layout without distortion while retaining the wide 3D view. It
+follows window resizing and fixed aspect choices. Use Match window / display
+in Options for arbitrary window dimensions; Original 4:3 still applies to the
+entire picture when explicitly selected.
 
-## Cleaning Up
-
-```
-make clean           # everything below
-make clean-extracted # extracted disc + compiled modules only, keeps built tools
-make clean-tools     # DolRecomp/ModernGekko build trees only
-```
-
-## License
-
-DolRecomp and ModernGekko are each distributed under their own upstream licenses (see `lib/DolRecomp/LICENSE` and `lib/ModernGekko/LICENSE`, the latter GPL-3.0-or-later due to its Dolphin-derived runtime). No Nintendo disc image, extracted game data, keys, or copyrighted assets are part of this repository, bring your own legally-owned dump.
+The correction scales both XY rows of the 2D projection, including translation,
+so the center stays fixed and element proportions remain unchanged. Z/W and
+perspective projection behavior are preserved. This applies to the game's
+orthographic passes, including 2D transition artwork. It does not alter the
+native ReFare options overlay, which is already rendered in screen coordinates.

@@ -1,0 +1,62 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c0548a0..a2bfd24 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -495,14 +509,16 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
+     add_custom_command(TARGET moderngekko-run POST_BUILD
+         COMMAND ${CMAKE_COMMAND} -E copy_directory
+                 "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Data/Sys"
+-                "$<TARGET_FILE_DIR:moderngekko-run>/Sys")
++                "$<TARGET_FILE_DIR:moderngekko-run>/Sys"
++        VERBATIM)
+     if(MODERNGEKKO_DOL_PATCH_MANIFEST)
+         add_custom_command(TARGET moderngekko-run POST_BUILD
+             COMMAND ${CMAKE_COMMAND} -E make_directory
+                     "$<TARGET_FILE_DIR:moderngekko-run>/patches"
+             COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                     "${MODERNGEKKO_DOL_PATCH_MANIFEST}"
+-                    "$<TARGET_FILE_DIR:moderngekko-run>/patches/${_moderngekko_dol_patch_name}")
++                    "$<TARGET_FILE_DIR:moderngekko-run>/patches/${_moderngekko_dol_patch_name}"
++        VERBATIM)
+     endif()
+     if(MODERNGEKKO_GAME_SETTINGS_OVERRIDE)
+         get_filename_component(_moderngekko_settings_name
+@@ -510,7 +526,8 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
+         add_custom_command(TARGET moderngekko-run POST_BUILD
+             COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                     "${MODERNGEKKO_GAME_SETTINGS_OVERRIDE}"
+-                    "$<TARGET_FILE_DIR:moderngekko-run>/Sys/GameSettings/${_moderngekko_settings_name}")
++                    "$<TARGET_FILE_DIR:moderngekko-run>/Sys/GameSettings/${_moderngekko_settings_name}"
++        VERBATIM)
+     endif()
+ 
+     add_executable(moderngekko-launcher
+@@ -626,7 +643,8 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
+                 "$<TARGET_FILE:dolrecomp>"
+                 "$<TARGET_FILE_DIR:moderngekko-port>"
+         DEPENDS dolrecomp
+-        COMMENT "Refreshing dolrecomp beside moderngekko-port")
++        COMMENT "Refreshing dolrecomp beside moderngekko-port"
++        VERBATIM)
+     add_dependencies(moderngekko-port moderngekko-port-recompiler)
+ endif()
+ 
+diff --git a/tools/moderngekko_port.cpp b/tools/moderngekko_port.cpp
+index af1c2a5..dc068a6 100644
+--- a/tools/moderngekko_port.cpp
++++ b/tools/moderngekko_port.cpp
+@@ -795,7 +795,13 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
+     std::ofstream{normalized_smc};
+ 
+   const unsigned compile_jobs = std::max(1u, std::thread::hardware_concurrency());
+-  std::string configure = "cmake -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 cmake -S " +
++  // Forced response files leave parenthesized object paths unquoted on POSIX.
++#if defined(_WIN32)
++  const std::string cmake_configure = "cmake -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 cmake -S ";
++#else
++  const std::string cmake_configure = "cmake -S ";
++#endif
++  std::string configure = cmake_configure +
+       Quote(source_root / "vendor/dolphin/module-template") +
+       " -B " + Quote(module_build) + " -G Ninja -DCMAKE_BUILD_TYPE=Release" +
+       " -DCMAKE_C_COMPILER=" + compiler + " -DGAME_ID=" + game.disc_id +

@@ -1,0 +1,34 @@
+diff --git a/Source/Core/VideoCommon/OnScreenUI.cpp b/Source/Core/VideoCommon/OnScreenUI.cpp
+index 451109b..cd89b2c 100644
+--- a/Source/Core/VideoCommon/OnScreenUI.cpp
++++ b/Source/Core/VideoCommon/OnScreenUI.cpp
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "VideoCommon/OnScreenUI.h"
++#include "VideoCommon/VideoEvents.h"
+ 
+ #include "Common/CommonPaths.h"
+ #include "Common/EnumMap.h"
+@@ -422,6 +423,7 @@ void OnScreenUI::Finalize()
+   DrawDebugText();
+   OSD::DrawMessages();
+   DrawChallengesAndLeaderboards();
++  GetVideoEvents().imgui_draw_event.Trigger();
+   ImGui::Render();
+ 
+   // Check for font changes
+diff --git a/Source/Core/VideoCommon/VideoEvents.h b/Source/Core/VideoCommon/VideoEvents.h
+index fe30aa2..e3da818 100644
+--- a/Source/Core/VideoCommon/VideoEvents.h
++++ b/Source/Core/VideoCommon/VideoEvents.h
+@@ -66,6 +66,9 @@ struct PresentInfo
+ 
+ struct VideoEvents
+ {
++  // Render-thread overlay hook, with the ImGui context and lock held.
++  Common::HookableEvent<> imgui_draw_event;
++
+   // Called when certain video config setting are changed
+   Common::HookableEvent<u32> config_changed_event;
+ 

@@ -1,0 +1,98 @@
+diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
+index 831e044..5550234 100644
+--- a/Source/Core/Core/Config/GraphicsSettings.h
++++ b/Source/Core/Core/Config/GraphicsSettings.h
+@@ -106,6 +107,8 @@ extern const Info<bool> GFX_CPU_CULL;
+ 
+ extern const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS;
+ extern const Info<TriState> GFX_MTL_USE_PRESENT_DRAWABLE;
++// 0: backend default; -1: auto 60 Hz pacing on compatible display cadences.
++extern const Info<double> GFX_MTL_MINIMUM_PRESENT_DURATION;
+ 
+ extern const Info<bool> GFX_SW_DUMP_OBJECTS;
+ extern const Info<bool> GFX_SW_DUMP_TEV_STAGES;
+diff --git a/Source/Core/Core/Config/GraphicsSettings.cpp b/Source/Core/Core/Config/GraphicsSettings.cpp
+index fb7f6a8..40f86c5 100644
+--- a/Source/Core/Core/Config/GraphicsSettings.cpp
++++ b/Source/Core/Core/Config/GraphicsSettings.cpp
+@@ -123,6 +125,9 @@ const Info<TriState> GFX_MTL_MANUALLY_UPLOAD_BUFFERS{
+ const Info<TriState> GFX_MTL_USE_PRESENT_DRAWABLE{
+     {System::GFX, "Settings", "MTLUsePresentDrawable"}, TriState::Auto};
+ 
++const Info<double> GFX_MTL_MINIMUM_PRESENT_DURATION{
++    {System::GFX, "Settings", "MTLMinimumPresentDuration"}, 0.0};
++
+ const Info<bool> GFX_SW_DUMP_OBJECTS{{System::GFX, "Settings", "SWDumpObjects"}, false};
+ const Info<bool> GFX_SW_DUMP_TEV_STAGES{{System::GFX, "Settings", "SWDumpTevStages"}, false};
+ const Info<bool> GFX_SW_DUMP_TEV_TEX_FETCHES{{System::GFX, "Settings", "SWDumpTevTexFetches"},
+diff --git a/Source/Core/VideoBackends/Metal/MTLGfx.mm b/Source/Core/VideoBackends/Metal/MTLGfx.mm
+index 4b744fe..fcefc54 100644
+--- a/Source/Core/VideoBackends/Metal/MTLGfx.mm
++++ b/Source/Core/VideoBackends/Metal/MTLGfx.mm
+@@ -2,6 +2,8 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "VideoBackends/Metal/MTLGfx.h"
++#include "Common/Config/Config.h"
++#include "Core/Config/GraphicsSettings.h"
+ 
+ #include "VideoBackends/Metal/MTLBoundingBox.h"
+ #include "VideoBackends/Metal/MTLObjectCache.h"
+@@ -455,6 +457,10 @@ static MTLTextureType FromAbstract(AbstractTextureType type, bool multisample)
+     CheckForSurfaceChange();
+     CheckForSurfaceResize();
+     m_drawable = MRCRetain([m_layer nextDrawable]);
++    // A resized/occluded surface can temporarily have no drawable. Do not
++    // start a render pass with a nil attachment; skip this presentation.
++    if (!m_drawable)
++      return false;
+     m_backbuffer->UpdateBackbufferTexture([m_drawable texture]);
+     SetAndClearFramebuffer(m_backbuffer.get(), clear_color);
+     return m_drawable != nullptr;
+@@ -473,7 +479,10 @@ static MTLTextureType FromAbstract(AbstractTextureType type, bool multisample)
+       // On the other hand, it helps Xcode's GPU captures start and stop on frame boundaries
+       // which is convenient.  Put it here as a default-off config, which we can override in Xcode.
+       // It also seems to improve frame pacing, so enable it by default with vsync
+-      if (g_ActiveConfig.iUsePresentDrawable == TriState::On ||
++      const double minimum_duration = Config::Get(Config::GFX_MTL_MINIMUM_PRESENT_DURATION);
++      if (g_ActiveConfig.bVSyncActive && minimum_duration > 0.0)
++        [g_state_tracker->GetRenderCmdBuf() presentDrawable:m_drawable afterMinimumDuration:minimum_duration];
++      else if (g_ActiveConfig.iUsePresentDrawable == TriState::On ||
+           (g_ActiveConfig.iUsePresentDrawable == TriState::Auto && g_ActiveConfig.bVSyncActive))
+         [g_state_tracker->GetRenderCmdBuf() presentDrawable:m_drawable];
+       else
+diff --git a/Source/Core/VideoBackends/Metal/MTLMain.mm b/Source/Core/VideoBackends/Metal/MTLMain.mm
+index ff8480e..28bac1a 100644
+--- a/Source/Core/VideoBackends/Metal/MTLMain.mm
++++ b/Source/Core/VideoBackends/Metal/MTLMain.mm
+@@ -11,9 +11,12 @@
+ #endif
+ 
+ #include <Metal/Metal.h>
++#include <cstdio>
+ #include <QuartzCore/QuartzCore.h>
+ 
+ #include "Common/Common.h"
++#include "Common/Config/Config.h"
++#include "Core/Config/GraphicsSettings.h"
+ #include "Common/MsgHandler.h"
+ 
+ #include "VideoBackends/Metal/MTLBoundingBox.h"
+@@ -164,6 +167,17 @@ static bool WindowSystemTypeSupportsMetal(WindowSystemType type)
+     return;
+   NSView* view = static_cast<NSView*>(wsi.render_surface);
+   CAMetalLayer* layer = [CAMetalLayer layer];
++  if (Config::Get(Config::GFX_MTL_MINIMUM_PRESENT_DURATION) < 0.0)
++  {
++    const NSInteger refresh = view.window.screen.maximumFramesPerSecond;
++    // Prefer a stable two-vblank cadence on 120 Hz ProMotion, or one on
++    // 60 Hz displays. Do not impose 60 Hz minimum durations on 144 Hz etc.
++    // Leave half a millisecond of tolerance for refresh-clock rounding.
++    const double duration = refresh >= 60 && refresh % 60 == 0 ? 1.0 / 60.0 - 0.0005 : 0.0;
++    Config::SetCurrent(Config::GFX_MTL_MINIMUM_PRESENT_DURATION, duration);
++    std::fprintf(stderr, "[metal] display=%ld Hz; minimum present duration=%.3f ms\n",
++                 static_cast<long>(refresh), duration * 1000.0);
++  }
+ 
+   Util::PopulateBackendInfo(&g_backend_info);
+ 

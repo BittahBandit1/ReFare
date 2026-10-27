@@ -12,3 +12,11 @@ CMakeUserPresets.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Personal disc images and local machine settings
+*.iso
+*.gcm
+*.ciso
+*.rvz
+*.wbfs
+.env

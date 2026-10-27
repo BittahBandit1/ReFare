@@ -15,10 +15,20 @@ EXTRACTED_ROOT := extracted
 GAME_SLUG := $(if $(ISO),$(strip $(shell basename "$(ISO)" | sed -E 's/\.[Ii][Ss][Oo]$$//; s/[^A-Za-z0-9]+/-/g; s/^-+//; s/-+$$//')),$(GAME))
 EXTRACTED_DIR := $(EXTRACTED_ROOT)/$(GAME_SLUG)
 MODULES_DIR   := build/modules
+PREPARED_DIR  := build/games/$(GAME_SLUG)
+SKIP_STARTUP ?= 1
 
 JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 CMAKE_BUILD_TYPE ?= Release
 BUILD_TESTING ?= OFF
+
+# macOS ARM64 first; retain upstream Windows/Linux build support.
+ifeq ($(shell uname -s),Darwin)
+CMAKE_PLATFORM_ARGS ?= -DCMAKE_OSX_ARCHITECTURES=arm64
+else
+CMAKE_PLATFORM_ARGS ?=
+endif
+MODERNGEKKO_CMAKE_ARGS ?= -DMODERNGEKKO_FRONTEND_NAME=ReFare -DMODERNGEKKO_GAMECUBE_CONTROLLERS=ON -DMODERNGEKKO_REQUIRED_DISC_ID=GCTE51 -DMODERNGEKKO_DEFAULT_WINDOW_TITLE=ReFare -DREFARE_OPTIONS_SOURCE_DIR="$(CURDIR)/src"
 
 # Generated-code backend: portable C or native LLVM objects.
 BACKEND ?= c
@@ -46,9 +56,9 @@ WIT_STAMP := .git/.recomp-wit-stamp
         llvm llvm-run clean clean-extracted clean-tools
 
 help:
-	@echo "GCWIIRecomp-template"
+	@echo "ReFare — Crazy Taxi (GameCube), macOS ARM64"
 	@echo ""
-	@echo "Works with any GameCube or Wii ISO -- there is no default game."
+	@echo "Initial supported disc: Crazy Taxi USA (GCTE51), revision 0."
 	@echo "ISO= or GAME= is required the first time you run a target that"
 	@echo "needs an extracted game."
 	@echo ""
@@ -97,26 +107,26 @@ submodules:
 		git submodule sync --recursive; \
 		git submodule update --init --recursive; \
 	fi
+	@sh scripts/apply-patches.sh
 
 # --- tools -------------------------------------------------------------------
 
 dolrecomp: submodules
 	cmake -S $(DOLRECOMP_DIR) -B $(DOLRECOMP_BUILD) -G Ninja -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) \
-		-DBUILD_TESTING=$(BUILD_TESTING) \
+		-DBUILD_TESTING=$(BUILD_TESTING) $(CMAKE_PLATFORM_ARGS) \
 		-DDOLRECOMP_ENABLE_LLVM=$(DOLRECOMP_ENABLE_LLVM) $(LLVM_CMAKE_ARG)
 	cmake --build $(DOLRECOMP_BUILD) --target dolrecomp -j$(JOBS)
 
 moderngekko: submodules
-	cmake -S $(MODERNGEKKO_DIR) -B $(MODERNGEKKO_BUILD) -G Ninja -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) \
-		-DBUILD_TESTING=$(BUILD_TESTING) \
+	cmake -S $(MODERNGEKKO_DIR) -B $(MODERNGEKKO_BUILD) -G Ninja -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE) $(MODERNGEKKO_CMAKE_ARGS) \
+		-DBUILD_TESTING=$(BUILD_TESTING) $(CMAKE_PLATFORM_ARGS) \
 		-DDOLRECOMP_ENABLE_LLVM=$(DOLRECOMP_ENABLE_LLVM) $(LLVM_CMAKE_ARG)
 	cmake --build $(MODERNGEKKO_BUILD) --target moderngekko-port -j$(JOBS)
 
 tools: dolrecomp moderngekko
 
-# Wii ISO extraction needs Wiimms ISO Tools; DolRecomp downloads its own
-# copy into extern/wit on first use. GameCube extraction doesn't need this,
-# but running it unconditionally keeps the pipeline simple.
+# Optional Wii extraction helper retained from the upstream template.
+# Crazy Taxi GameCube extraction is built in and does not need this.
 $(WIT_STAMP): | dolrecomp
 	echo y | $(DOLRECOMP_BIN) --setup
 	@if [ "$$(uname)" = "Darwin" ] && [ -d extern/wit/bin ]; then \
@@ -130,11 +140,11 @@ wit: $(WIT_STAMP)
 # --- recompile pipeline -------------------------------------------------------
 
 # Real file target: skipped automatically once this game has already been
-# extracted, so ISO is only required the first time per game. dolrecomp/wit
+# extracted, so ISO is only required the first time per game. dolrecomp
 # are order-only prerequisites (`|`) since they're phony/always "run" --
 # normal prerequisites would force re-extraction on every invocation.
 # There is no default game, so GAME_SLUG must come from ISO or GAME.
-$(EXTRACTED_DIR)/sys/main.dol: | dolrecomp wit
+$(EXTRACTED_DIR)/sys/main.dol: | dolrecomp
 	@if [ -z "$(GAME_SLUG)" ]; then \
 		echo "error: no ISO= or GAME= given -- see 'make help'" >&2; \
 		exit 1; \
@@ -160,11 +170,14 @@ extract: $(EXTRACTED_DIR)/sys/main.dol
 
 # moderngekko-port caches compiled modules by DOL hash + toolchain, so
 # re-running these is cheap once a module has already been built.
-recompile: moderngekko $(EXTRACTED_DIR)/sys/main.dol
-	$(MODERNGEKKO_PORT_BIN) build $(EXTRACTED_DIR) --backend $(BACKEND) --toolchain $(TOOLCHAIN) --output $(MODULES_DIR)
+prepare-game: $(EXTRACTED_DIR)/sys/main.dol
+	python3 scripts/prepare-game.py "$(EXTRACTED_DIR)" "$(PREPARED_DIR)" --skip-startup "$(SKIP_STARTUP)"
 
-run: moderngekko $(EXTRACTED_DIR)/sys/main.dol
-	$(MODERNGEKKO_PORT_BIN) run $(EXTRACTED_DIR) --backend $(BACKEND) --toolchain $(TOOLCHAIN) --output $(MODULES_DIR) -- $(RUN_ARGS)
+recompile: moderngekko prepare-game
+	$(MODERNGEKKO_PORT_BIN) build $(PREPARED_DIR) --backend $(BACKEND) --toolchain $(TOOLCHAIN) --output $(MODULES_DIR)
+
+run: moderngekko prepare-game
+	$(MODERNGEKKO_PORT_BIN) run $(PREPARED_DIR) --backend $(BACKEND) --toolchain $(TOOLCHAIN) --output $(MODULES_DIR) -- $(RUN_ARGS)
 
 llvm: BACKEND=llvm
 llvm: recompile
@@ -181,3 +194,10 @@ clean-tools:
 	rm -rf $(DOLRECOMP_BUILD) $(MODERNGEKKO_BUILD)
 
 clean: clean-extracted clean-tools
+
+# Apply once per runtime user directory; resizing then updates the projection.
+USER_DIR ?= build/user
+ASPECT ?= window
+.PHONY: configure-video prepare-game
+configure-video:
+	python3 scripts/configure-video.py --user-dir "$(USER_DIR)" --aspect "$(ASPECT)"
