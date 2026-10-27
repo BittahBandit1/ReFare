@@ -130,6 +130,13 @@ int main(int argc, char** argv) {
     tap(refare::Confirm);
     Check(!Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation did not turn off");
     tap(refare::Right);
+    // V-Sync: live toggle, saved under [Hardware].
+    tap(refare::Down);
+    const bool vsync_before = Config::Get(Config::GFX_VSYNC);
+    tap(refare::Right);
+    Check(Config::Get(Config::GFX_VSYNC)!=vsync_before,"V-Sync did not toggle");
+    tap(refare::Right);
+    Check(Config::Get(Config::GFX_VSYNC)==vsync_before,"V-Sync did not toggle back");
 #ifdef __APPLE__
     tap(refare::Down); tap(refare::Right);
     Check(!refare::LoadMetalHUDPreference(directory),"Metal HUD Off was not saved");
@@ -194,5 +201,5 @@ int main(int argc, char** argv) {
   }
   Check(!refare::OptionsMenuBlocksInput(),"Destroyed menu blocks input");
   ImGui::DestroyContext(); Config::Shutdown();
-  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, 120 FPS toggle, exit confirmation, HUD default/toggle/persistence, and input release\n";
+  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, 120 FPS and V-Sync toggles, exit confirmation, HUD default/toggle/persistence, and input release\n";
 }

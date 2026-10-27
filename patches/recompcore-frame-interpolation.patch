@@ -93,7 +93,7 @@ index fc6f896..f279f4f 100644
    }
  
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index bf81554..b381ce3 100644
+index bf81554..a310945 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -19,6 +19,7 @@
@@ -104,48 +104,52 @@ index bf81554..b381ce3 100644
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoConfig.h"
  #include "VideoCommon/VideoEvents.h"
-@@ -168,6 +169,40 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -168,6 +169,44 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
  void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
                         TimePoint presentation_time)
  {
 +  // ReFare frame interpolation: show the interpolated image (halfway between
 +  // the previous frame and this one) at the frame's slot, then the real frame
-+  // half a field later. Costs one 120 Hz frame of latency. An interpolated
-+  // frame that would land too close to the real one is dropped.
++  // half a field later. Costs one 120 Hz frame of latency.
 +  RefareFrameInterpolation::Frame interp;
 +  if (fb_width != 0 && fb_height != 0 && RefareFrameInterpolation::TakeFrame(xfb_addr, &interp) &&
 +      g_gfx->SupportsUtilityDrawing())
 +  {
 +    const auto half_field = std::chrono::duration_cast<DT>(std::chrono::microseconds(8342));
 +    const bool timed = presentation_time.time_since_epoch().count() != 0;
-+    // Frames normally reach the presenter a few ms after their slot, so allow
-+    // the in-between frame until shortly before the real frame is due.
-+    const auto lateness = timed ? Clock::now() - presentation_time : DT{};
-+    const bool show = lateness < half_field - std::chrono::microseconds(1500);
++    // Frames reach the presenter after their slot (measured ~13 ms with the
++    // replay running), so pace the pair from whichever is later: the slot or
++    // now. The in-between frame goes out first, the real one half a field
++    // after it. Only when badly behind (a stall) is the in-between frame
++    // skipped, leaving the backlog to the normal catch-up logic.
++    const auto now = Clock::now();
++    const auto lateness = timed ? now - presentation_time : DT{};
++    const bool show = lateness < std::chrono::microseconds(41700);
 +    RefareFrameInterpolation::NotePresent(
 +        show, std::chrono::duration<double, std::milli>(lateness).count());
 +    if (show)
 +    {
++      const TimePoint base = timed ? std::max(presentation_time, now) : now;
 +      PresentInfo interp_info{
 +          .frame_count = m_frame_count,
 +          .present_count = m_present_count++,
 +          .reason = PresentInfo::PresentReason::Immediate,
 +          .emulated_timestamp = ticks,
-+          .intended_present_time = presentation_time,
++          .intended_present_time = base,
 +      };
 +      m_refare_interp_texture = interp.texture;
 +      m_refare_interp_rect = interp.rect;
 +      Present(timed ? &interp_info : nullptr);
 +      m_refare_interp_texture = nullptr;
++      if (timed)
++        presentation_time = base + half_field;
 +    }
-+    if (timed)
-+      presentation_time += half_field;
 +  }
 +
    bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
  
    PresentInfo present_info{
-@@ -970,7 +1005,15 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -970,7 +1009,15 @@ void Presenter::Present(PresentInfo* present_info)
    const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
  
    // Render the XFB to the screen.
@@ -162,7 +166,7 @@ index bf81554..b381ce3 100644
    {
      // Adjust the source rectangle instead of using an oversized viewport to render the XFB.
      MathUtil::Rectangle<int> render_target_rc = GetTargetRectangle();
-@@ -1005,7 +1048,7 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -1005,7 +1052,7 @@ void Presenter::Present(PresentInfo* present_info)
      g_gfx->PresentBackbuffer();
    }
  

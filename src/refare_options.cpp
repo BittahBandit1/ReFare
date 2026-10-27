@@ -31,10 +31,10 @@ constexpr std::array<Aspect, 6> aspects = {{{"Match window / display",AspectMode
 // Dolphin post-processing shader shipped in Sys/Shaders/FXAA.glsl.
 constexpr const char* kFXAAShader = "FXAA";
 
-enum class Row { Scale, Aspect, HudLayout, FXAA, Interpolation, MetalHUD, Exit };
+enum class Row { Scale, Aspect, HudLayout, FXAA, Interpolation, VSync, MetalHUD, Exit };
 const std::vector<Row>& Rows() {
   static const std::vector<Row> rows = {Row::Scale, Row::Aspect, Row::HudLayout, Row::FXAA,
-    Row::Interpolation,
+    Row::Interpolation, Row::VSync,
 #ifdef __APPLE__
     Row::MetalHUD,
 #endif
@@ -48,6 +48,7 @@ const char* RowLabel(Row row) {
   case Row::HudLayout: return "HUD and menus";
   case Row::FXAA: return "FXAA";
   case Row::Interpolation: return "120 FPS (experimental)";
+  case Row::VSync: return "V-Sync";
   case Row::MetalHUD: return "Metal HUD";
   case Row::Exit: return "Exit The Game";
   }
@@ -99,6 +100,7 @@ struct OptionsMenu::Impl {
   bool center_hud = true;
   bool fxaa = false;
   bool interpolation = false;
+  bool vsync = true;
   bool confirm_exit = false;
   int exit_choice = 0;  // 0 = No (left, default), 1 = Yes (right)
   bool exiting = false;
@@ -121,6 +123,7 @@ struct OptionsMenu::Impl {
     center_hud = Config::Get(Config::GFX_CENTER_ORTHOGRAPHIC_PROJECTION);
     fxaa = Config::Get(Config::GFX_ENHANCE_POST_SHADER) == kFXAAShader;
     interpolation = Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION);
+    vsync = Config::Get(Config::GFX_VSYNC);
     const int scale = Config::Get(Config::GFX_EFB_SCALE);
     scale_index = 0;
     for (int i=0; i<static_cast<int>(scales.size()); ++i)
@@ -197,6 +200,13 @@ struct OptionsMenu::Impl {
       ini.GetOrCreateSection("Enhancements")->Set("RefareFrameInterpolation", interpolation);
     });
   }
+  void ApplyVSync() {
+    // Off lets presents run unthrottled (tearing possible); applies live.
+    Config::SetBaseOrCurrent(Config::GFX_VSYNC, vsync);
+    SaveGraphics([&](Common::IniFile& ini) {
+      ini.GetOrCreateSection("Hardware")->Set("VSync", vsync);
+    });
+  }
   void ApplyMetalHUD() {
     SetMetalHUDVisible(render_view, metal_hud);
     Common::IniFile frontend;
@@ -218,6 +228,7 @@ struct OptionsMenu::Impl {
     case Row::HudLayout: center_hud = !center_hud; ApplyHudLayout(); break;
     case Row::FXAA: fxaa = !fxaa; ApplyFXAA(); break;
     case Row::Interpolation: interpolation = !interpolation; ApplyInterpolation(); break;
+    case Row::VSync: vsync = !vsync; ApplyVSync(); break;
     case Row::MetalHUD: metal_hud = !metal_hud; ApplyMetalHUD(); break;
     case Row::Exit: break;  // Needs an explicit confirm, never a D-pad nudge.
     }
@@ -225,7 +236,7 @@ struct OptionsMenu::Impl {
   void Activate() {
     switch (CurrentRow()) {
     case Row::Exit: confirm_exit = true; exit_choice = 0; break;
-    case Row::HudLayout: case Row::FXAA: case Row::Interpolation: case Row::MetalHUD: Step(1); break;
+    case Row::HudLayout: case Row::FXAA: case Row::Interpolation: case Row::VSync: case Row::MetalHUD: Step(1); break;
     default: break;
     }
   }
@@ -242,6 +253,7 @@ struct OptionsMenu::Impl {
     case Row::HudLayout: return center_hud ? "Centered (4:3)" : "Stretched";
     case Row::FXAA: return fxaa ? "On" : "Off";
     case Row::Interpolation: return interpolation ? "On" : "Off";
+    case Row::VSync: return vsync ? "On" : "Off";
     case Row::MetalHUD: return metal_hud ? "On" : "Off";
     case Row::Exit: return "";
     }

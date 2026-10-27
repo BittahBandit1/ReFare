@@ -97,7 +97,7 @@ or **Tab** on the keyboard, to open the ReFare options overlay. It is available
 at the title screen and during play; no game-state addresses are assumed.
 
 - D-pad up/down selects resolution scale, aspect ratio, HUD and menus
-  (Centered/Stretched), FXAA, 120 FPS (experimental), Metal HUD (macOS), or
+  (Centered/Stretched), FXAA, 120 FPS (experimental), V-Sync, Metal HUD (macOS), or
   Exit The Game.
 - D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
 - Exit The Game asks "Are you sure?" (No on the left, Yes on the right).
