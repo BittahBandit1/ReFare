@@ -1,5 +1,6 @@
 #include "refare_metal_hud.hpp"
 #import <AppKit/AppKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <dispatch/dispatch.h>
 #import <Foundation/Foundation.h>
@@ -57,5 +58,10 @@ double DisplayRefreshRate(void* render_view) {
     });
   }
   return s_rate.load(std::memory_order_relaxed);
+}
+
+double SecondsSinceKeyDown() {
+  return CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState,
+                                                kCGEventKeyDown);
 }
 }

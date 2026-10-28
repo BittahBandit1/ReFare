@@ -10,10 +10,14 @@ void PrioritizeCurrentThread();
 // Maximum refresh rate of the screen showing the render view (120 on
 // ProMotion), refreshed in the background; 0 until known. Any thread.
 double DisplayRefreshRate(void* render_view);
+// Seconds since the last key-down anywhere in the system (one cheap query,
+// instead of reading every key's state). Any thread.
+double SecondsSinceKeyDown();
 #else
 inline void SetMetalHUDVisible(void*, bool) {}
 inline void KeepGameResponsive() {}
 inline void PrioritizeCurrentThread() {}
 inline double DisplayRefreshRate(void*) { return 0.0; }
+inline double SecondsSinceKeyDown() { return -1.0; }  // unsupported: poll keys instead
 #endif
 }

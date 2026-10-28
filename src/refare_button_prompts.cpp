@@ -1,4 +1,5 @@
 #include "refare_button_prompts.hpp"
+#include "refare_metal_hud.hpp"
 #include "Common/HookableEvent.h"
 #include "Core/Host.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
@@ -157,16 +158,27 @@ std::vector<unsigned char> MakeKeyboardDecidePrompt(const std::vector<unsigned c
 struct ButtonPrompts::Impl {
   Common::EventHook hook;
   int mode = -1;  // -1 unknown, 0 controller, 1 keyboard
+  unsigned tick = 0;
+  double last_key_age = -1.0;
 
+  // Video thread, once per present. Must stay cheap: on macOS, reading one
+  // key's state is a system call, so keys are never polled one by one there.
   void Poll() {
-    if (!g_controller_interface.IsInit()) return;
-    bool keyboard = false, controller = false, have_controller = false;
+    if ((tick++ % 2u) != 0u || !g_controller_interface.IsInit()) return;
     const bool focused = Host_RendererHasFocus();
+    bool keyboard = false, controller = false, have_controller = false;
+    const double key_age = SecondsSinceKeyDown();
+    if (key_age >= 0.0) {
+      // A key was pressed since the last check if its age went down.
+      keyboard = focused && last_key_age >= 0.0 && key_age < last_key_age;
+      last_key_age = key_age;
+    }
+    const bool poll_keys = key_age < 0.0 && focused && (tick % 8u) == 1u;
     for (const auto& device : g_controller_interface.GetAllDevices()) {
       const bool is_pad = device->GetSource() == "SDL";
       const bool is_keyboard = !is_pad && device->GetName().find("Keyboard") != std::string::npos;
       have_controller |= is_pad;
-      if (!is_pad && !(is_keyboard && focused)) continue;
+      if (!is_pad && !(is_keyboard && poll_keys)) continue;
       for (const auto* input : device->Inputs()) {
         if (!input->IsDetectable() || input->GetState() <= 0.5) continue;
         if (is_keyboard) {
