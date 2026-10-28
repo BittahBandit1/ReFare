@@ -97,7 +97,7 @@ index fc6f896..f279f4f 100644
    }
  
 diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
-index bf81554..385b1dc 100644
+index bf81554..1f679c1 100644
 --- a/Source/Core/VideoCommon/Present.cpp
 +++ b/Source/Core/VideoCommon/Present.cpp
 @@ -19,6 +19,7 @@
@@ -108,7 +108,7 @@ index bf81554..385b1dc 100644
  #include "VideoCommon/VertexManagerBase.h"
  #include "VideoCommon/VideoConfig.h"
  #include "VideoCommon/VideoEvents.h"
-@@ -168,6 +169,76 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
+@@ -168,6 +169,64 @@ bool Presenter::FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_heigh
  void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks,
                         TimePoint presentation_time)
  {
@@ -124,39 +124,27 @@ index bf81554..385b1dc 100644
 +    const auto period =
 +        std::chrono::duration_cast<DT>(std::chrono::duration<double>(interp.period_s));
 +    const bool timed = presentation_time.time_since_epoch().count() != 0;
-+    // Frames reach the presenter after their slot (~13 ms with the replay
-+    // running), so pace from whichever is later: the slot or now. Only when
-+    // badly behind (a stall) are the in-between images skipped, leaving the
-+    // backlog to the normal catch-up logic.
++    // Frames reach the presenter after their slot, so pace from whichever is
++    // later: the slot or now.
 +    const auto now = Clock::now();
 +    const auto lateness = timed ? now - presentation_time : DT{};
-+    bool show = lateness < std::chrono::microseconds(41700);
-+    RefareFrameInterpolation::NotePresent(
-+        show, std::chrono::duration<double, std::milli>(lateness).count());
++    const double late_ms = std::chrono::duration<double, std::milli>(lateness).count();
++    // Skip the in-between images only for a real stall: well past the usual
++    // lateness, not past a fixed cutoff. With the game locked to the
++    // display's rate the presentation queue settles at a steady depth
++    // (measured ~33 ms late on an M3 Pro, jittering +/-10 ms); a fixed
++    // 41.7 ms cutoff sat inside that jitter and dropped frames at random
++    // (visible lurches). The usual lateness is a slow average that a stall
++    // can only nudge.
++    static double s_usual_late_ms = -1.0;
++    if (s_usual_late_ms < 0.0)
++      s_usual_late_ms = late_ms;
++    const bool show = late_ms < s_usual_late_ms + 25.0 && late_ms < 100.0;
++    s_usual_late_ms += 0.02 * (std::min(late_ms, s_usual_late_ms + 25.0) - s_usual_late_ms);
++    RefareFrameInterpolation::NotePresent(show, late_ms);
 +    // When Metal paces (one refresh minimum per drawable), submit back to
 +    // back; otherwise sleep one refresh between images on this thread.
 +    const bool paced = RefareFrameInterpolation::BackendPacesFrames();
-+    // The game runs at exactly the display's rate, so images queued ahead of
-+    // the display after a hitch would stay queued forever (added latency,
-+    // and lurches whenever arrival jitter crosses the late cutoff). When
-+    // every frame for half a second arrived over 12 ms late, skip one
-+    // frame's in-between images to drop one refresh of that backlog.
-+    // (Measured on an M3 Pro: normal arrival is 3-6 ms late. Waiting for a
-+    // drawable was tried as the signal but fires in normal play.)
-+    // If three trims in a row don't bring lateness down, the delay isn't
-+    // backlog; stop trimming until it clears once.
-+    static int s_frames_late = 0, s_late_trims = 0;
-+    const bool over = lateness > std::chrono::milliseconds(12);
-+    s_frames_late = over ? s_frames_late + 1 : 0;
-+    if (!over)
-+      s_late_trims = 0;
-+    if (show && paced && s_frames_late >= 30 && s_late_trims < 3)
-+    {
-+      ++s_late_trims;
-+      s_frames_late = 0;
-+      show = false;
-+      RefareFrameInterpolation::NoteBacklogTrim();
-+    }
 +    if (show)
 +    {
 +      TimePoint when = timed ? std::max(presentation_time, now) : now;
@@ -185,7 +173,7 @@ index bf81554..385b1dc 100644
    bool is_duplicate = FetchXFB(xfb_addr, fb_width, fb_stride, fb_height, ticks);
  
    PresentInfo present_info{
-@@ -210,7 +281,7 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
+@@ -210,7 +269,7 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
  
    video_events.before_present_event.Trigger(present_info);
  
@@ -194,7 +182,7 @@ index bf81554..385b1dc 100644
    {
      Present(&present_info);
      ProcessFrameDumping(ticks);
-@@ -970,7 +1041,15 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -970,7 +1029,15 @@ void Presenter::Present(PresentInfo* present_info)
    const bool backbuffer_bound = g_gfx->BindBackbuffer({{0.0f, 0.0f, 0.0f, 1.0f}});
  
    // Render the XFB to the screen.
@@ -211,7 +199,7 @@ index bf81554..385b1dc 100644
    {
      // Adjust the source rectangle instead of using an oversized viewport to render the XFB.
      MathUtil::Rectangle<int> render_target_rc = GetTargetRectangle();
-@@ -1005,7 +1084,7 @@ void Presenter::Present(PresentInfo* present_info)
+@@ -1005,7 +1072,7 @@ void Presenter::Present(PresentInfo* present_info)
      g_gfx->PresentBackbuffer();
    }
  
@@ -237,10 +225,10 @@ index 91ba870..c041ec3 100644
  
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.cpp b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
 new file mode 100644
-index 0000000..82f8986
+index 0000000..e3ea13c
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
-@@ -0,0 +1,887 @@
+@@ -0,0 +1,877 @@
 +// ReFare: render-only frame interpolation. See RefareFrameInterpolation.h.
 +
 +#include "VideoCommon/RefareFrameInterpolation.h"
@@ -392,7 +380,6 @@ index 0000000..82f8986
 +  // Presenter side (since the last stats line).
 +  u64 stats_taken = 0, stats_shown = 0, stats_late = 0, stats_addr_mismatch = 0;
 +  u64 stats_swaps = 0;
-+  u64 stats_trims = 0;
 +  double stats_lateness_ms = 0.0, stats_max_lateness_ms = 0.0;
 +  u32 stats_last_xfb = 0, stats_last_copy = 0;
 +};
@@ -1038,7 +1025,7 @@ index 0000000..82f8986
 +                   "[refare] interpolation: %.0f Hz, %llu frames, %llu matrix loads, %.1f%% matched, "
 +                   "%.1f%% blended, last stream %zu bytes\n"
 +                   "[refare]   presenter: %llu swaps, %llu frames ready, %llu shown, %llu dropped "
-+                   "late, %llu backlog trims, %llu wrong XFB (vi %08x copy %08x), lateness avg %.1f max %.1f ms\n"
++                   "late (stall), %llu wrong XFB (vi %08x copy %08x), lateness avg %.1f max %.1f ms\n"
 +                   "[refare]   video thread: %.2f images/frame, interpolation work avg %.2f max %.2f ms, "
 +                   "%llu 2D-only frames shown as is\n"
 +                   "[refare]   on glass: %llu on time, %llu held extra refresh, %llu early, %llu "
@@ -1051,7 +1038,6 @@ index 0000000..82f8986
 +                   static_cast<unsigned long long>(s.stats_taken),
 +                   static_cast<unsigned long long>(s.stats_shown),
 +                   static_cast<unsigned long long>(s.stats_late),
-+                   static_cast<unsigned long long>(s.stats_trims),
 +                   static_cast<unsigned long long>(s.stats_addr_mismatch), s.stats_last_xfb,
 +                   s.stats_last_copy,
 +                   s.stats_taken ? s.stats_lateness_ms / s.stats_taken : 0.0,
@@ -1069,7 +1055,6 @@ index 0000000..82f8986
 +      s.stats_work_ms = s.stats_work_max_ms = 0.0;
 +      s.stats_work_frames = s.stats_images = s.stats_2d_frames = 0;
 +      s.stats_swaps = s.stats_taken = s.stats_shown = s.stats_late = s.stats_addr_mismatch = 0;
-+      s.stats_trims = 0;
 +      s.stats_lateness_ms = s.stats_max_lateness_ms = 0.0;
 +    }
 +  }
@@ -1095,13 +1080,6 @@ index 0000000..82f8986
 +  ++s.stats_taken;
 +  *out = s.frame_set;
 +  return true;
-+}
-+
-+void NoteBacklogTrim()
-+{
-+  State& s = S();
-+  std::lock_guard lock(s.frame_mutex);
-+  ++s.stats_trims;
 +}
 +
 +void NotePresent(bool shown, double lateness_ms)
@@ -1130,10 +1108,10 @@ index 0000000..82f8986
 +}  // namespace RefareFrameInterpolation
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.h b/Source/Core/VideoCommon/RefareFrameInterpolation.h
 new file mode 100644
-index 0000000..580266d
+index 0000000..8d06887
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.h
-@@ -0,0 +1,80 @@
+@@ -0,0 +1,79 @@
 +// ReFare: render-only frame interpolation (experimental, off by default).
 +//
 +// The game still runs its logic at 59.94 Hz. Each emulated frame's GPU command
@@ -1209,7 +1187,6 @@ index 0000000..580266d
 +
 +// Presenter-side statistics (REFARE_INTERP_STATS).
 +void NotePresent(bool shown, double lateness_ms);
-+void NoteBacklogTrim();
 +
 +// Drops all recorded state (e.g. after a savestate load or setting change).
 +void Reset();
