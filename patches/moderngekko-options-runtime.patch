@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 91a8d5f..9dd83b1 100644
+index 91a8d5f..30b7c8e 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -281,6 +281,20 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
@@ -7,7 +7,7 @@ index 91a8d5f..9dd83b1 100644
      endif()
      target_link_libraries(moderngekko PRIVATE core uicommon)
 +    if(REFARE_OPTIONS_SOURCE_DIR)
-+        target_sources(moderngekko PRIVATE "${REFARE_OPTIONS_SOURCE_DIR}/refare_options.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_runtime_services.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_widescreen_culling.cpp")
++        target_sources(moderngekko PRIVATE "${REFARE_OPTIONS_SOURCE_DIR}/refare_options.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_runtime_services.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_widescreen_culling.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_button_prompts.cpp")
 +        target_include_directories(moderngekko PRIVATE "${REFARE_OPTIONS_SOURCE_DIR}")
 +        target_link_libraries(moderngekko PRIVATE imgui)
 +        target_compile_definitions(moderngekko PRIVATE REFARE_OPTIONS_MENU=1)
@@ -24,12 +24,13 @@ index 91a8d5f..9dd83b1 100644
          target_sources(moderngekko PRIVATE
              vendor/dolphin/Source/Core/DolphinNoGUI/PlatformX11.cpp)
 diff --git a/src/runtime/dolphin_runtime.cpp b/src/runtime/dolphin_runtime.cpp
-index f9b5405..6ef09eb 100644
+index f9b5405..67aca39 100644
 --- a/src/runtime/dolphin_runtime.cpp
 +++ b/src/runtime/dolphin_runtime.cpp
-@@ -1,4 +1,9 @@
+@@ -1,4 +1,10 @@
  #include "moderngekko/runtime.hpp"
 +#ifdef REFARE_OPTIONS_MENU
++#include "refare_button_prompts.hpp"
 +#include "refare_options.hpp"
 +#include "refare_runtime_services.hpp"
 +#include "refare_widescreen_culling.hpp"
@@ -37,7 +38,7 @@ index f9b5405..6ef09eb 100644
  
  #include "AudioCommon/AudioCommon.h"
  #include "Common/Config/Config.h"
-@@ -113,7 +118,13 @@ PowerPC::CPUCore SelectCPUCore() {
+@@ -113,7 +119,13 @@ PowerPC::CPUCore SelectCPUCore() {
  std::vector<std::string> Host_GetPreferredLocales() { return {}; }
  void Host_PPCSymbolsChanged() {}
  void Host_PPCBreakpointsChanged() {}
@@ -52,7 +53,7 @@ index f9b5405..6ef09eb 100644
  void Host_Message(HostMessageID id) {
    if (id == HostMessageID::WMUserStop && s_platform)
      s_platform->Stop();
-@@ -547,6 +558,9 @@ ModuleSource::AttachedDescriptor(const ModernGekkoModuleDesc *descriptor) {
+@@ -547,6 +559,9 @@ ModuleSource::AttachedDescriptor(const ModernGekkoModuleDesc *descriptor) {
  Runtime::Runtime(std::unique_ptr<Impl> impl) : m_impl(std::move(impl)) {}
  
  RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
@@ -62,7 +63,7 @@ index f9b5405..6ef09eb 100644
    std::lock_guard lock(s_runtime_mutex);
    if (s_runtime_active)
      return {
-@@ -598,8 +612,25 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
+@@ -598,8 +613,25 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
        "ModernGekko - " + impl->metadata.game_name + " [" +
        impl->metadata.disc_id + "]");
    impl->mods = std::make_unique<ModManager>();
@@ -88,7 +89,7 @@ index f9b5405..6ef09eb 100644
    for (const ModLoadIssue &issue : mod_report.issues)
      std::fprintf(stderr, "mod rejected: %s: %s\n", issue.source.c_str(),
                   issue.message.c_str());
-@@ -665,6 +696,9 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
+@@ -665,6 +697,9 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
    if (impl->config.graphics.internal_resolution_scale)
      Config::SetBase(Config::GFX_EFB_SCALE,
                      *impl->config.graphics.internal_resolution_scale);
@@ -98,7 +99,7 @@ index f9b5405..6ef09eb 100644
    Config::SetBase(Config::GFX_SHADER_CACHE, true);
    Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
                    ShaderCompilationMode::AsynchronousUberShaders);
-@@ -755,6 +789,10 @@ RuntimeRunResult Runtime::Run() {
+@@ -755,6 +790,10 @@ RuntimeRunResult Runtime::Run() {
              RuntimeError{RuntimeErrorCode::InvalidState,
                           "runtime is already running"}};
  
@@ -109,11 +110,13 @@ index f9b5405..6ef09eb 100644
    std::unique_ptr<BootParameters> boot;
    {
      std::lock_guard lock(s_runtime_mutex);
-@@ -790,6 +828,15 @@ RuntimeRunResult Runtime::Run() {
+@@ -790,6 +829,17 @@ RuntimeRunResult Runtime::Run() {
                           "Dolphin could not boot sys/main.dol"}};
    }
    m_impl->booted = true;
 +#ifdef REFARE_OPTIONS_MENU
++  // Keyboard/controller-aware prompts ("Use the X Key to decide.").
++  refare::ButtonPrompts button_prompts(m_impl->config.game_root);
 +  std::unique_ptr<refare::OptionsMenu> options_menu;
 +  if (!m_impl->config.headless)
 +    options_menu = std::make_unique<refare::OptionsMenu>(

@@ -1,0 +1,208 @@
+diff --git a/Source/Core/VideoCommon/CMakeLists.txt b/Source/Core/VideoCommon/CMakeLists.txt
+index 3a88fc0..aed0cbd 100644
+--- a/Source/Core/VideoCommon/CMakeLists.txt
++++ b/Source/Core/VideoCommon/CMakeLists.txt
+@@ -176,6 +176,8 @@ add_library(videocommon
+   Spirv.h
+   Statistics.cpp
+   Statistics.h
++  RefarePromptTextures.cpp
++  RefarePromptTextures.h
+   TextureCacheBase.cpp
+   TextureCacheBase.h
+   TextureConfig.cpp
+diff --git a/Source/Core/VideoCommon/RefarePromptTextures.cpp b/Source/Core/VideoCommon/RefarePromptTextures.cpp
+new file mode 100644
+index 0000000..0dda199
+--- /dev/null
++++ b/Source/Core/VideoCommon/RefarePromptTextures.cpp
+@@ -0,0 +1,93 @@
++// ReFare: swap texture-baked button prompts for keyboard variants.
++
++#include "VideoCommon/RefarePromptTextures.h"
++
++#include <atomic>
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++
++#include "VideoCommon/Assets/CustomTextureData.h"
++#include "VideoCommon/TextureInfo.h"
++
++namespace RefarePromptTextures
++{
++namespace
++{
++struct Entry
++{
++  std::vector<u8> texels;
++  u32 width, height, gx_format;
++  std::shared_ptr<VideoCommon::CustomTextureData> keyboard;
++};
++
++std::mutex s_mutex;
++std::vector<Entry> s_entries;
++std::atomic<bool> s_keyboard{false};
++std::atomic<bool> s_changed{false};
++}  // namespace
++
++void Register(std::vector<u8> texels, u32 width, u32 height, u32 gx_format, std::vector<u8> rgba)
++{
++  if (rgba.size() != size_t(width) * height * 4)
++    return;
++  auto data = std::make_shared<VideoCommon::CustomTextureData>();
++  auto& level = data->m_slices.emplace_back().m_levels.emplace_back();
++  level.width = width;
++  level.height = height;
++  level.row_length = width;
++  level.format = AbstractTextureFormat::RGBA8;
++  level.data = Common::UniqueBuffer<u8>(rgba.size());
++  std::memcpy(level.data.data(), rgba.data(), rgba.size());
++  std::lock_guard lock(s_mutex);
++  s_entries.push_back({std::move(texels), width, height, gx_format, std::move(data)});
++}
++
++void SetKeyboard(bool keyboard)
++{
++  if (s_keyboard.exchange(keyboard) != keyboard)
++    s_changed.store(true);
++}
++
++bool TakeModeChange()
++{
++  return s_changed.load(std::memory_order_relaxed) && s_changed.exchange(false);
++}
++
++bool MayMatch(u32 width, u32 height, u32 gx_format)
++{
++  std::lock_guard lock(s_mutex);
++  for (const Entry& e : s_entries)
++  {
++    if (e.width == width && e.height == height && e.gx_format == gx_format)
++      return true;
++  }
++  return false;
++}
++
++std::shared_ptr<VideoCommon::CustomTextureData> Find(const TextureInfo& texture_info)
++{
++  if (!s_keyboard.load(std::memory_order_relaxed))
++    return nullptr;
++  const u32 format = static_cast<u32>(texture_info.GetTextureFormat());
++  std::lock_guard lock(s_mutex);
++  for (const Entry& e : s_entries)
++  {
++    if (e.width != texture_info.GetRawWidth() || e.height != texture_info.GetRawHeight() ||
++        e.gx_format != format || texture_info.GetTextureSize() < e.texels.size() ||
++        !texture_info.GetData())
++      continue;
++    if (std::memcmp(texture_info.GetData(), e.texels.data(), e.texels.size()) == 0)
++    {
++      static bool s_logged = false;
++      if (!s_logged)
++      {
++        s_logged = true;
++        std::fprintf(stderr, "[refare] button prompts: keyboard prompt texture in use\n");
++      }
++      return e.keyboard;
++    }
++  }
++  return nullptr;
++}
++}  // namespace RefarePromptTextures
+diff --git a/Source/Core/VideoCommon/RefarePromptTextures.h b/Source/Core/VideoCommon/RefarePromptTextures.h
+new file mode 100644
+index 0000000..65720b6
+--- /dev/null
++++ b/Source/Core/VideoCommon/RefarePromptTextures.h
+@@ -0,0 +1,38 @@
++// ReFare: swap texture-baked button prompts for keyboard variants.
++//
++// The frontend registers (original texels, replacement image) pairs built
++// from the game's own files. While keyboard mode is on, a texture whose raw
++// data matches an original is created from the replacement instead; switching
++// modes evicts the matching cache entries so the change shows immediately.
++#pragma once
++
++#include <memory>
++#include <vector>
++
++#include "Common/CommonTypes.h"
++
++class TextureInfo;
++namespace VideoCommon
++{
++class CustomTextureData;
++}
++
++namespace RefarePromptTextures
++{
++// `texels`: raw GX data as the game loads it. `rgba`: linear RGBA8, same size.
++// Call before rendering starts.
++void Register(std::vector<u8> texels, u32 width, u32 height, u32 gx_format, std::vector<u8> rgba);
++
++// Any thread. Takes effect on the next texture lookup.
++void SetKeyboard(bool keyboard);
++
++// Video thread (texture cache): the replacement for this texture, if any.
++std::shared_ptr<VideoCommon::CustomTextureData> Find(const TextureInfo& texture_info);
++
++// Video thread: true once after each mode change, when matching cache entries
++// should be evicted.
++bool TakeModeChange();
++
++// Whether a texture of this size/format could be a registered prompt.
++bool MayMatch(u32 width, u32 height, u32 gx_format);
++}  // namespace RefarePromptTextures
+diff --git a/Source/Core/VideoCommon/TextureCacheBase.cpp b/Source/Core/VideoCommon/TextureCacheBase.cpp
+index c5d6096..e63c9f2 100644
+--- a/Source/Core/VideoCommon/TextureCacheBase.cpp
++++ b/Source/Core/VideoCommon/TextureCacheBase.cpp
+@@ -47,6 +47,7 @@
+ #include "VideoCommon/OpcodeDecoding.h"
+ #include "VideoCommon/PixelShaderManager.h"
+ #include "VideoCommon/Present.h"
++#include "VideoCommon/RefarePromptTextures.h"
+ #include "VideoCommon/Resources/CustomResourceManager.h"
+ #include "VideoCommon/ShaderCache.h"
+ #include "VideoCommon/Statistics.h"
+@@ -1309,6 +1310,22 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
+   if (!texture_info.IsDataValid())
+     return {};
+ 
++  // ReFare: the keyboard/controller prompt mode changed; drop cached prompt
++  // textures so the matching variant is created on this lookup.
++  if (RefarePromptTextures::TakeModeChange())
++  {
++    for (auto iter = m_textures_by_address.begin(); iter != m_textures_by_address.end();)
++    {
++      const RcTcacheEntry& cached = iter->second;
++      if (!cached->IsCopy() &&
++          RefarePromptTextures::MayMatch(cached->native_width, cached->native_height,
++                                         static_cast<u32>(cached->format.texfmt)))
++        iter = InvalidateTexture(iter);
++      else
++        ++iter;
++    }
++  }
++
+   // Hash assigned to texcache entry (also used to generate filenames used for texture dumping and
+   // custom texture lookup)
+   u64 base_hash = TEXHASH_INVALID;
+@@ -1583,6 +1600,16 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
+     }
+   }
+ 
++  // ReFare: keyboard variant of a texture-baked button prompt.
++  if (!custom_texture_data)
++  {
++    if (auto prompt = RefarePromptTextures::Find(texture_info))
++    {
++      custom_texture_data = std::move(prompt);
++      skip_texture_dump = true;
++    }
++  }
++
+   std::string texture_name = "";
+ 
+   if (g_ActiveConfig.bGraphicMods)

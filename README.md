@@ -150,6 +150,21 @@ L1 opens ReFare Options. Existing keyboard bindings are retained alongside it.
 Automatic profiles have `[ReFare] AutoConfigured=True`; set this to False after
 making custom changes if you want the runtime to leave the profile alone.
 
+## Keyboard button prompts
+
+Crazy Taxi's on-screen prompts are baked into textures, e.g. "Use the A
+Button to decide." on the mode select screen. When you play with the
+keyboard, ReFare shows "Use the X Key to decide." instead. The prompt follows
+the device you used last: any key switches to keyboard prompts, any controller
+button or stick switches back. A key only counts while the game window has
+focus.
+
+The keyboard texture is built at startup from your own `sprCENG.all`. It keeps
+the game's own glyphs for every letter except X, K and y, which are rendered
+from Roboto Condensed (SIL Open Font License 1.1). No game data is stored in
+this repository. Set `REFARE_PROMPT_DUMP=<dir>` to write the generated image
+for inspection.
+
 ## Frame pacing
 
 New profiles default to VSync, precise timing, and presentation smoothing.
