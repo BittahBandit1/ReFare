@@ -64,7 +64,7 @@ index d7f1cc1..79c478c 100644
    }
    case BPMEM_LOADTLUT0:  // This updates bpmem.tmem_config.tlut_src, no need to do anything here.
 diff --git a/Source/Core/VideoCommon/CMakeLists.txt b/Source/Core/VideoCommon/CMakeLists.txt
-index 69a0968..3a88fc0 100644
+index 69a0968..aed0cbd 100644
 --- a/Source/Core/VideoCommon/CMakeLists.txt
 +++ b/Source/Core/VideoCommon/CMakeLists.txt
 @@ -145,6 +145,8 @@ add_library(videocommon
@@ -76,6 +76,15 @@ index 69a0968..3a88fc0 100644
    Present.h
    RenderState.cpp
    RenderState.h
+@@ -174,6 +176,8 @@ add_library(videocommon
+   Spirv.h
+   Statistics.cpp
+   Statistics.h
++  RefarePromptTextures.cpp
++  RefarePromptTextures.h
+   TextureCacheBase.cpp
+   TextureCacheBase.h
+   TextureConfig.cpp
 diff --git a/Source/Core/VideoCommon/OpcodeDecoding.cpp b/Source/Core/VideoCommon/OpcodeDecoding.cpp
 index fc6f896..f279f4f 100644
 --- a/Source/Core/VideoCommon/OpcodeDecoding.cpp
@@ -216,10 +225,10 @@ index 91ba870..c041ec3 100644
  
 diff --git a/Source/Core/VideoCommon/RefareFrameInterpolation.cpp b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
 new file mode 100644
-index 0000000..66564c6
+index 0000000..5bfee76
 --- /dev/null
 +++ b/Source/Core/VideoCommon/RefareFrameInterpolation.cpp
-@@ -0,0 +1,844 @@
+@@ -0,0 +1,861 @@
 +// ReFare: render-only frame interpolation. See RefareFrameInterpolation.h.
 +
 +#include "VideoCommon/RefareFrameInterpolation.h"
@@ -284,6 +293,10 @@ index 0000000..66564c6
 +  std::vector<u32> pending;  // indices into `loads` awaiting their primitive
 +  std::unordered_map<u64, u32> occurrences;
 +  bool overflow = false;
++  // Whether anything this frame was drawn with a perspective projection.
++  // Frames without (menus, results screens) are pure 2D: shown as is, since
++  // in-between images only add cost and can smear sliding sprites.
++  bool has_3d = false;
 +
 +  void Clear()
 +  {
@@ -292,6 +305,7 @@ index 0000000..66564c6
 +    pending.clear();
 +    occurrences.clear();
 +    overflow = false;
++    has_3d = false;
 +  }
 +};
 +
@@ -356,6 +370,7 @@ index 0000000..66564c6
 +  // Video-thread time spent in OnXFBCopy (since the last stats line).
 +  double stats_work_ms = 0.0, stats_work_max_ms = 0.0;
 +  u64 stats_work_frames = 0, stats_images = 0;
++  u64 stats_2d_frames = 0;
 +  // On-glass intervals from the backend (Metal presentedTime), classified
 +  // against the output refresh period.
 +  u64 glass_head = 0;
@@ -745,6 +760,8 @@ index 0000000..66564c6
 +    if (opcode >= static_cast<u8>(OpcodeDecoder::Opcode::GX_PRIMITIVE_START) &&
 +        opcode <= static_cast<u8>(OpcodeDecoder::Opcode::GX_PRIMITIVE_END))
 +    {
++      if (xfmem.projection.type == ProjectionType::Perspective)
++        r.has_3d = true;
 +      if (!r.pending.empty())
 +      {
 +        // Identify the draw by its header and leading vertex/index bytes.
@@ -861,7 +878,14 @@ index 0000000..66564c6
 +  SampleGlass(1.0 / rate);
 +  bool show_real = true;
 +  const std::vector<float> slots =
-+      can_replay && !r.stream.empty() ? PlanSlots(rate, &show_real) : std::vector<float>{};
++      can_replay && !r.stream.empty() && r.has_3d ? PlanSlots(rate, &show_real) : std::vector<float>{};
++  // 2D-only frame: no in-between images; restart the slot phase so the next
++  // 3D frame lines up with a refresh.
++  if (!r.has_3d)
++  {
++    s.phase = 0.0;
++    ++s.stats_2d_frames;
++  }
 +
 +  if (!slots.empty())
 +  {
@@ -986,7 +1010,8 @@ index 0000000..66564c6
 +                   "%.1f%% blended, last stream %zu bytes\n"
 +                   "[refare]   presenter: %llu swaps, %llu frames ready, %llu shown, %llu dropped "
 +                   "late, %llu wrong XFB (vi %08x copy %08x), lateness avg %.1f max %.1f ms\n"
-+                   "[refare]   video thread: %.2f images/frame, interpolation work avg %.2f max %.2f ms\n"
++                   "[refare]   video thread: %.2f images/frame, interpolation work avg %.2f max %.2f ms, "
++                   "%llu 2D-only frames shown as is\n"
 +                   "[refare]   on glass: %llu on time, %llu held extra refresh, %llu early, %llu "
 +                   "never shown, worst gap %.1f ms (game %.3f Hz)\n",
 +                   rate, static_cast<unsigned long long>(s.stats_frames),
@@ -1003,7 +1028,8 @@ index 0000000..66564c6
 +                   s.stats_max_lateness_ms,
 +                   s.stats_work_frames ? double(s.stats_images) / s.stats_work_frames : 0.0,
 +                   s.stats_work_frames ? s.stats_work_ms / s.stats_work_frames : 0.0,
-+                   s.stats_work_max_ms, static_cast<unsigned long long>(s.glass_on_time),
++                   s.stats_work_max_ms, static_cast<unsigned long long>(s.stats_2d_frames),
++                   static_cast<unsigned long long>(s.glass_on_time),
 +                   static_cast<unsigned long long>(s.glass_long),
 +                   static_cast<unsigned long long>(s.glass_short),
 +                   static_cast<unsigned long long>(s.glass_dropped), s.glass_worst_ms,
@@ -1011,7 +1037,7 @@ index 0000000..66564c6
 +      s.glass_on_time = s.glass_long = s.glass_short = s.glass_dropped = 0;
 +      s.glass_worst_ms = 0.0;
 +      s.stats_work_ms = s.stats_work_max_ms = 0.0;
-+      s.stats_work_frames = s.stats_images = 0;
++      s.stats_work_frames = s.stats_images = s.stats_2d_frames = 0;
 +      s.stats_swaps = s.stats_taken = s.stats_shown = s.stats_late = s.stats_addr_mismatch = 0;
 +      s.stats_lateness_ms = s.stats_max_lateness_ms = 0.0;
 +    }
