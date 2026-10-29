@@ -1,0 +1,27 @@
+diff --git a/Source/Core/DolphinNoGUI/PlatformMacos.mm b/Source/Core/DolphinNoGUI/PlatformMacos.mm
+index 98959d8..0a9ae3e 100644
+--- a/Source/Core/DolphinNoGUI/PlatformMacos.mm
++++ b/Source/Core/DolphinNoGUI/PlatformMacos.mm
+@@ -256,9 +256,19 @@ bool PlatformMacOS::Init()
+     [m_window toggleFullScreen:m_window];
+   }
+ 
+-  [m_window makeKeyAndOrderFront:NSApp];
+-  [m_window makeMainWindow];
+-  [NSApp activateIgnoringOtherApps:YES];
++  // ReFare: REFARE_NO_ACTIVATE (set by the unattended test runner) shows the
++  // window without taking keyboard focus, so whatever the user is typing in
++  // another app never reaches the game. Automation input still works.
++  if (::getenv("REFARE_NO_ACTIVATE"))
++  {
++    [m_window orderFrontRegardless];
++  }
++  else
++  {
++    [m_window makeKeyAndOrderFront:NSApp];
++    [m_window makeMainWindow];
++    [NSApp activateIgnoringOtherApps:YES];
++  }
+   [m_window setTitle:@"Dolphin-emu-nogui"];
+ 
+   SetupMenu();

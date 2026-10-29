@@ -11,6 +11,8 @@
 # any other command on this Mac):
 #   seconds=N              run for N seconds (10-900), then quit cleanly
 #   env=NAME=VALUE         NAME must start with REFARE_ or MTL_; VALUE plain
+# Use env=REFARE_NO_ACTIVATE=1 to open the game window without taking keyboard
+# focus, so typing in other apps never reaches the game.
 # Every job rebuilds first (make run does nothing extra when up to date), then
 # runs with --automation-dir build/claude-auto so pad input, screenshots and a
 # clean stop can be driven through files while it runs. The log goes to
