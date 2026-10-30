@@ -6,10 +6,16 @@ Crazy Taxi (GameCube) static recompilation project using
 [ModernGekko](https://github.com/ExpansionPak/ModernGekko).
 
 macOS ARM64 is the first target. Windows, Linux, Android and iOS are currently
-being researched. Full arcade rounds play on an M3 Pro MacBook Pro, 
-including variable aspect ratios, such as 16:9, 16:10, 21:9 and more. An experimental 90-180 FPS frame 
-interpolation mode is included, off by default
+being researched. Thorough testing of arcade rounds has been done, and play at full
+speed on an M3 Pro MacBook Pro with GPU headroom to spare. Testing has not 
+been done on lower end hardware at this time. 
 (see [docs/120FPS.md](docs/120FPS.md)). See [project status](docs/STATUS.md).
+
+Features:
+- Faster loading (removed Acclaim animated video)
+- Variable aspect ratio (32:9, 21:9, 16:9 etc.)
+- Up to 180Hz gameplay via matrix interpolation
+- Preserved HUD art (Centered by default; Stretched is optional)
 
 **You need your own NTSC-U copy of the game.** ReFare contains no game code, data or
 assets. It translates the `main.dol` from your own legally obtained Crazy Taxi
