@@ -239,6 +239,12 @@ perspective projection behavior are preserved. This applies to the game's
 orthographic passes, including 2D transition artwork. It does not alter the
 native ReFare options overlay, which is already rendered in screen coordinates.
 
+## Contributors
+
+- [BittahBandit1](https://github.com/BittahBandit1): creator and maintainer
+- ChatGPT Codex (OpenAI): development
+- Claude (Anthropic): development
+
 ## License
 
 ReFare is free software under the [GNU General Public License v3.0](LICENSE).
