@@ -39,6 +39,7 @@ struct Paths {
   var isInstalled: Bool {
     let fm = FileManager.default
     guard fm.fileExists(atPath: prepared.appendingPathComponent("sys/main.dol").path),
+          fm.fileExists(atPath: prepared.appendingPathComponent("files/ct").path),
           let walker = fm.enumerator(at: modules, includingPropertiesForKeys: nil)
     else { return false }
     for case let url as URL in walker where url.pathExtension == "dylib" { return true }
@@ -243,7 +244,14 @@ final class LauncherModel: ObservableObject {
                      [paths.refare.appendingPathComponent("scripts/prepare-game.py").path,
                       paths.extracted.path, paths.prepared.path, "--skip-startup", "1"],
                      "Preparing the game files failed.")
-      try? fm.removeItem(at: paths.extracted)  // the prepared copy is all that's needed
+      // prepare-game.py links prepared/files to the extraction. Move the real
+      // folder in instead, so the 1.4 GB extraction isn't kept twice.
+      let assets = paths.prepared.appendingPathComponent("files")
+      if (try? assets.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+        try fm.removeItem(at: assets)
+        try fm.moveItem(at: paths.extracted.appendingPathComponent("files"), to: assets)
+      }
+      try? fm.removeItem(at: paths.extracted)
 
       phase = .working("Recompiling Crazy Taxi for your Mac. This takes a few minutes, once.")
       try await step(paths.tool("moderngekko-port").path,
