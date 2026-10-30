@@ -7,7 +7,7 @@ Crazy Taxi (GameCube) static recompilation project using
 
 macOS ARM64 is the first target. Windows, Linux, Android and iOS are currently
 being researched. Full arcade rounds play on an M3 Pro MacBook Pro, 
-including ultrawide aspect ratios. An experimental 90-180 FPS frame 
+including variable aspect ratios, such as 16:9, 16:10, 21:9 and more. An experimental 90-180 FPS frame 
 interpolation mode is included, off by default
 (see [docs/120FPS.md](docs/120FPS.md)). See [project status](docs/STATUS.md).
 
