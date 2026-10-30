@@ -162,3 +162,19 @@ index 3b18d05..044739f 100644
    std::string netplay_nickname = "Player";
    std::string netplay_address = "127.0.0.1";
    std::uint16_t netplay_port = 2626;
+diff --git a/tools/moderngekko_port.cpp b/tools/moderngekko_port.cpp
+index dc068a6..0f2b72e 100644
+--- a/tools/moderngekko_port.cpp
++++ b/tools/moderngekko_port.cpp
+@@ -576,7 +576,10 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
+   const auto& game = *inspected.metadata;
+   if (options.output.empty())
+     options.output = DefaultOutput();
+-  const fs::path source_root = fs::path(MODERNGEKKO_SOURCE_DIR);
++  // ReFare: a packaged app points this at the module sources it ships.
++  const char* source_override = std::getenv("MODERNGEKKO_SOURCE_DIR");
++  const fs::path source_root =
++      fs::path(source_override && *source_override ? source_override : MODERNGEKKO_SOURCE_DIR);
+   const DolPatchSet patches = LoadDefaultDolPatches(
+       source_root / "vendor/dolphin/Data/Sys/GameSettings" / (game.disc_id + ".ini"));
+   if (!patches)

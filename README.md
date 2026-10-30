@@ -24,6 +24,28 @@ time.
 
 To facilitate faster loading, the beginning copyright screen and the Acclaim animated video were removed.
 
+## The ReFare app (no build needed)
+
+Releases include **ReFare.app** for Apple Silicon Macs (macOS 13 or later). It
+contains no game code or data. Open it, then drop your own Crazy Taxi (USA,
+GCTE51) `.iso` or `.ciso` onto the window, or click **Choose File…**. ReFare
+checks the disc, extracts it and recompiles the game for your Mac once (a few
+minutes); after that the window just shows **Play**. Everything it makes is kept
+in `~/Library/Application Support/ReFare`.
+
+Recompiling needs free developer tools, which the app checks for and explains:
+Apple's Command Line Tools (`xcode-select --install`) and CMake + Ninja
+(`brew install cmake ninja` from [Homebrew](https://brew.sh)).
+
+The app is not notarized (that needs a paid Apple Developer account), so macOS
+blocks the first launch. Open it once, then go to **System Settings → Privacy &
+Security** and click **Open Anyway** (on macOS 14 and earlier, right-click the
+app and choose **Open**).
+
+Maintainers build the release with `make tools` and then
+`bash scripts/make-app.sh`, which writes `build/release/ReFare-<version>-macOS-arm64.zip`
+and refuses to package anything from a disc.
+
 ## Build on Apple Silicon
 
 Install Xcode command line tools and `brew install cmake ninja pkg-config`.

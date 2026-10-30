@@ -11,6 +11,8 @@
 # any other command on this Mac):
 #   seconds=N              run for N seconds (10-900), then quit cleanly
 #   env=NAME=VALUE         NAME must start with REFARE_ or MTL_; VALUE plain
+#   package=1              instead of running the game, build the tools and
+#                          package ReFare.app (scripts/make-app.sh)
 # Use env=REFARE_NO_ACTIVATE=1 to open the game window without taking keyboard
 # focus, so typing in other apps never reaches the game.
 # Every job rebuilds first (make run does nothing extra when up to date), then
@@ -42,7 +44,7 @@ while true; do
   if [ ! -f "$JOBS/next.job" ]; then sleep 2; continue; fi
   id=$(date +%Y%m%d-%H%M%S)
   mv "$JOBS/next.job" "$JOBS/$id.job"
-  seconds=60; envs=(); bad=""
+  seconds=60; envs=(); bad=""; package=""
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%$'\r'}
     case "$line" in
@@ -55,6 +57,7 @@ while true; do
         kv=${line#env=}
         if [[ "$kv" =~ ^(REFARE_|MTL_)[A-Z0-9_]+=[A-Za-z0-9._/:-]*$ ]]; then envs+=("$kv")
         else bad="rejected env line: $kv"; fi ;;
+      package=1) package=1 ;;
       *) bad="rejected line: $line" ;;
     esac
   done < "$JOBS/$id.job"
@@ -63,8 +66,15 @@ while true; do
     continue
   fi
 
-  echo "job $id: run ${seconds}s ${envs[*]:-}"
   log=$ROOT/build/logs/job-$id.log
+  if [ -n "$package" ]; then
+    echo "job $id: package ReFare.app"
+    { make tools JOBS=8 && bash scripts/make-app.sh; } > "$log" 2>&1; rc=$?
+    printf 'exit=%s\nlog=%s\n' "$rc" "build/logs/job-$id.log" > "$JOBS/$id.done"
+    echo "job $id finished (exit $rc)"
+    continue
+  fi
+  echo "job $id: run ${seconds}s ${envs[*]:-}"
   rm -rf "$ROOT/$AUTO"
   start=$(date +%s)
   env "${envs[@]+"${envs[@]}"}" make run GAME=Crazy-Taxi-USA JOBS=8 \
