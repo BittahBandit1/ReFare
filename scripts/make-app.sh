@@ -144,8 +144,14 @@ bad=$(find "$APP" -type f \( -iname '*.iso' -o -iname '*.ciso' -o -iname '*.gcm'
 if [ -n "$bad" ]; then
   echo "Refusing to package game files:" >&2; echo "$bad" >&2; exit 1
 fi
+# The module template's own generated/ folder holds only its generic,
+# upstream generated.h; any other output directory means game data leaked in.
+TEMPLATE_GENERATED=$TOOLCHAIN/module-template/generated
+if [ "$(ls -A "$TEMPLATE_GENERATED" 2>/dev/null)" != "generated.h" ]; then
+  echo "Unexpected files in $TEMPLATE_GENERATED" >&2; exit 1
+fi
 for dir in games extracted prepared modules generated; do
-  if find "$APP" -type d -name "$dir" | grep -q .; then
+  if find "$APP" -type d -name "$dir" ! -path "$TEMPLATE_GENERATED" | grep -q .; then
     echo "Refusing to package a '$dir' directory." >&2; exit 1
   fi
 done
