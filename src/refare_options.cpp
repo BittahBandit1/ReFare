@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <optional>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -39,14 +40,14 @@ constexpr std::array<InterpChoice,6> kInterpChoices = {{
   {"Off",false,0},{"Match display",true,0},{"90 FPS",true,90},
   {"120 FPS",true,120},{"144 FPS",true,144},{"180 FPS",true,180}}};
 
-enum class Row { Scale, Aspect, HudLayout, FXAA, Interpolation, VSync, MetalHUD, Exit };
+enum class Row { Scale, Aspect, HudLayout, FXAA, Interpolation, VSync, MetalHUD, MenuButton, Exit };
 const std::vector<Row>& Rows() {
   static const std::vector<Row> rows = {Row::Scale, Row::Aspect, Row::HudLayout, Row::FXAA,
     Row::Interpolation, Row::VSync,
 #ifdef __APPLE__
     Row::MetalHUD,
 #endif
-    Row::Exit};
+    Row::MenuButton, Row::Exit};
   return rows;
 }
 const char* RowLabel(Row row) {
@@ -58,9 +59,66 @@ const char* RowLabel(Row row) {
   case Row::Interpolation: return "Interpolation (experimental)";
   case Row::VSync: return "V-Sync";
   case Row::MetalHUD: return "Metal HUD";
+  case Row::MenuButton: return "Options menu button";
   case Row::Exit: return "Exit The Game";
   }
   return "";
+}
+
+// Controller button and keyboard key that open/close this menu, by Dolphin
+// input name. Saved in Config/ReFare.ini; render thread only.
+MenuButtonBinding s_menu_binding;
+
+// Display name for an SDL controller input (PlayStation labels, like the rest
+// of the menu); anything unknown is shown as Dolphin names it.
+std::string PadLabel(const std::string& name) {
+  static constexpr std::pair<const char*, const char*> labels[] = {
+    {"Shoulder L","L1"},{"Shoulder R","R1"},{"Trigger L","L2"},{"Trigger R","R2"},
+    {"Thumb L","L3"},{"Thumb R","R3"},{"Button W","Square"},{"Button N","Triangle"},
+    {"Button S","Cross"},{"Button E","Circle"},{"Back","Select / Share"},
+    {"Start","Start / Options"},{"Guide","Home / PS"},{"Touchpad","Touchpad"}};
+  for (const auto& [from, to] : labels) if (name == from) return to;
+  return name;
+}
+
+// Inputs that can't become the menu button: the menu's own navigation and
+// cancel, sticks, motion sensors and the mouse.
+bool BindablePad(const std::string& n) {
+  for (const char* p : {"Pad ","Left ","Right ","Accel","Gyro","Motion","Battery"})
+    if (n.starts_with(p)) return false;
+  return n != "Button S" && n != "Button E";
+}
+bool BindableKey(const std::string& n) {
+  for (const char* p : {"Click","Cursor","Axis","Scroll","Up","Down","Left","Right"})
+    if (n.starts_with(p)) return false;
+  return n != "Escape" && n != "Return" && n != "Keypad Enter";
+}
+
+MenuButtonCapture ReadCapture() {
+  MenuButtonCapture result;
+  if (!Host_RendererHasFocus() || !g_controller_interface.IsInit()) return result;
+  for (const auto& device : g_controller_interface.GetAllDevices()) {
+    const bool pad = device->GetSource() == "SDL";
+    if (!pad && device->GetName().find("Keyboard") == std::string::npos) continue;
+    for (const auto* input : device->Inputs()) {
+      if (!input->IsDetectable() || input->GetState() <= 0.5) continue;
+      const std::string name = input->GetName();
+      if (pad ? name == "Button E" : name == "Escape") { result.cancel = true; continue; }
+      if (pad ? !BindablePad(name) : !BindableKey(name)) {
+        // Navigation still down from choosing the row (e.g. Cross, Enter) must be
+        // released first; sticks, motion sensors and the mouse never count.
+        if (pad ? (name == "Button S" || name.starts_with("Pad "))
+                : !(name.starts_with("Click") || name.starts_with("Cursor") ||
+                    name.starts_with("Axis") || name.starts_with("Scroll")))
+          result.held = true;
+        continue;
+      }
+      result.held = true;
+      if (pad && result.pad.empty()) result.pad = name;
+      if (!pad && result.key.empty()) result.key = name;
+    }
+  }
+  return result;
 }
 
 using Buttons = OptionsInput;
@@ -75,13 +133,13 @@ Buttons ReadButtons() {
       return input && input->GetState() > 0.5;
     };
     if (device->GetSource() == "SDL") {
-      result[Toggle] |= held("Shoulder L");
+      result[Toggle] |= !s_menu_binding.pad.empty() && held(s_menu_binding.pad);
       result[Up] |= held("Pad N"); result[Down] |= held("Pad S");
       result[Left] |= held("Pad W"); result[Right] |= held("Pad E");
       result[Back] |= held("Button E");
       result[Confirm] |= held("Button S");
     } else {
-      result[Toggle] |= held("Tab");
+      result[Toggle] |= !s_menu_binding.key.empty() && held(s_menu_binding.key);
       result[Up] |= held("Up Arrow") || held("Up");
       result[Down] |= held("Down Arrow") || held("Down");
       result[Left] |= held("Left Arrow") || held("Left");
@@ -99,7 +157,11 @@ struct OptionsMenu::Impl {
   FramePacingRecorder pacing_recorder;
   std::function<OptionsInput()> input_source;
   std::function<void()> request_exit;
+  std::function<MenuButtonCapture()> capture_source;
   Buttons previous{};
+  bool capturing = false;
+  bool capture_armed = false;  // nothing held since capture started
+  mutable std::string binding_text;
   bool open = false;
   bool drain = false;
   int selected = 0;
@@ -119,10 +181,13 @@ struct OptionsMenu::Impl {
   bool hud_applied = false;
 
   Impl(std::filesystem::path path, std::function<OptionsInput()> source, void* view,
-       std::function<void()> exit)
+       std::function<void()> exit, std::function<MenuButtonCapture()> capture)
       : directory(std::move(path)), input_source(source ? std::move(source) : ReadButtons),
-        request_exit(std::move(exit)), render_view(view),
+        request_exit(std::move(exit)),
+        capture_source(capture ? std::move(capture) : ReadCapture), render_view(view),
         metal_hud(LoadMetalHUDPreference(directory)) {
+    s_menu_binding = LoadMenuButtonBinding(directory);
+    binding = s_menu_binding;
     draw_hook = GetVideoEvents().imgui_draw_event.Register([this] { Draw(); });
   }
   ~Impl() { draw_hook.reset(); s_blocks_input = false; }
@@ -234,6 +299,26 @@ struct OptionsMenu::Impl {
     frontend.GetOrCreateSection("Video")->Set("metal_hud", metal_hud);
     save_error = frontend.Save(file) ? "" : "Could not save HUD setting; change applies this session.";
   }
+  void SaveMenuButton() {
+    s_menu_binding = binding;
+    save_error = SaveMenuButtonBinding(directory, binding) ? "" : "Could not save the menu button; change applies this session.";
+  }
+  MenuButtonBinding binding = s_menu_binding;
+  void StartCapture() { capturing = true; capture_armed = false; }
+  // Waits for every input to be released (the press that chose the row),
+  // then binds the next controller button or key. Circle / Escape cancel.
+  void UpdateCapture() {
+    const MenuButtonCapture c = capture_source();
+    if (c.cancel) { capturing = false; previous.fill(true); return; }
+    if (!capture_armed) { capture_armed = !c.held; return; }
+    if (c.pad.empty() && c.key.empty()) return;
+    // A controller press changes only the controller button, a key only the key.
+    if (!c.pad.empty()) binding.pad = c.pad;
+    if (!c.key.empty()) binding.key = c.key;
+    SaveMenuButton();
+    capturing = false;
+    previous.fill(true);  // the new button is held now: don't let it close the menu
+  }
   void Step(int delta) {
     switch (CurrentRow()) {
     case Row::Scale:
@@ -253,17 +338,23 @@ struct OptionsMenu::Impl {
     }
     case Row::VSync: vsync = !vsync; ApplyVSync(); break;
     case Row::MetalHUD: metal_hud = !metal_hud; ApplyMetalHUD(); break;
+    case Row::MenuButton:  // Left/Right restore the default L1 / Tab.
+      if (binding.pad != MenuButtonBinding{}.pad || binding.key != MenuButtonBinding{}.key) {
+        binding = MenuButtonBinding{}; SaveMenuButton();
+      }
+      break;
     case Row::Exit: break;  // Needs an explicit confirm, never a D-pad nudge.
     }
   }
   void Activate() {
     switch (CurrentRow()) {
     case Row::Exit: confirm_exit = true; exit_choice = 0; break;
+    case Row::MenuButton: StartCapture(); break;
     case Row::HudLayout: case Row::FXAA: case Row::Interpolation: case Row::VSync: case Row::MetalHUD: Step(1); break;
     default: break;
     }
   }
-  void Close() { open = false; confirm_exit = false; drain = true; }
+  void Close() { open = false; confirm_exit = false; capturing = false; drain = true; }
   void FinishExit() {
     exiting = true;
     Close();
@@ -284,6 +375,10 @@ struct OptionsMenu::Impl {
     }
     case Row::VSync: return vsync ? "On" : "Off";
     case Row::MetalHUD: return metal_hud ? "On" : "Off";
+    case Row::MenuButton:
+      if (capturing) return "Press a button or key...";
+      binding_text = PadLabel(binding.pad) + " / " + binding.key;
+      return binding_text.c_str();
     case Row::Exit: return "";
     }
     return "";
@@ -350,7 +445,8 @@ struct OptionsMenu::Impl {
     for (int i=0;i<Count;++i) pressed[i] = down[i] && !previous[i];
     previous = down;
     if (exiting) { s_blocks_input = true; return; }
-    if (pressed[Toggle]) {
+    if (capturing) UpdateCapture();
+    else if (pressed[Toggle]) {
       if (open) Close();
       else { open = true; selected = 0; confirm_exit = false; ReadSettings(); }
     } else if (open && pressed[Back] && !confirm_exit) Close();
@@ -373,7 +469,16 @@ struct OptionsMenu::Impl {
     for (int index=0; index<static_cast<int>(rows.size()); ++index) {
       const Row row = rows[index];
       ImGui::PushID(index);
-      if (row == Row::Exit) {
+      if (row == Row::MenuButton) {
+        if (ImGui::Selectable(RowLabel(row),selected==index)) selected=index;
+        ImGui::TextUnformatted(RowValue(row));
+        ImGui::SameLine(ImGui::GetWindowWidth()-ImGui::GetStyle().WindowPadding.x-170);
+        if (ImGui::Button(capturing ? "Cancel" : "Change",ImVec2(84,32))) {
+          selected=index; if (capturing) capturing=false; else StartCapture();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset",ImVec2(78,32))) {selected=index; capturing=false; Step(1);}
+      } else if (row == Row::Exit) {
         ImGui::Separator(); ImGui::Spacing();
         const bool highlighted = selected == index;
         ImGui::PushStyleColor(ImGuiCol_Button, highlighted ? ImVec4(0.72f,0.16f,0.14f,1) : ImVec4(0.23f,0.25f,0.29f,1));
@@ -391,8 +496,14 @@ struct OptionsMenu::Impl {
     }
     ImGui::Separator(); ImGui::Spacing();
     ImGui::TextWrapped("Changes apply immediately and are saved.");
-    ImGui::TextDisabled("D-pad: select / change     Cross: select     L1 or Circle: close");
-    ImGui::TextDisabled("Keyboard: Tab, arrow keys, Enter, Escape");
+    if (capturing) {
+      ImGui::TextWrapped("Press the controller button or key that should open this menu. Circle / Escape: cancel.");
+    } else {
+      const std::string pad = "D-pad: select / change     Cross: select     " + PadLabel(s_menu_binding.pad) + " or Circle: close";
+      const std::string keys = "Keyboard: " + s_menu_binding.key + ", arrow keys, Enter, Escape";
+      ImGui::TextDisabled("%s", pad.c_str());
+      ImGui::TextDisabled("%s", keys.c_str());
+    }
     if (!save_error.empty()) ImGui::TextWrapped("%s",save_error.c_str());
     if (ImGui::Button("Done",ImVec2(-1,34))) Close();
     ImGui::End();
@@ -402,9 +513,10 @@ struct OptionsMenu::Impl {
   }
 };
 OptionsMenu::OptionsMenu(std::filesystem::path directory, std::function<OptionsInput()> source,
-                         void* render_view, std::function<void()> request_exit)
+                         void* render_view, std::function<void()> request_exit,
+                         std::function<MenuButtonCapture()> capture_source)
   : m_impl(std::make_unique<Impl>(std::move(directory),std::move(source),render_view,
-                                  std::move(request_exit))) {}
+                                  std::move(request_exit),std::move(capture_source))) {}
 OptionsMenu::~OptionsMenu() = default;
 bool OptionsMenuBlocksInput() {return s_blocks_input.load();}
 void PrepareMetalHUD() {
@@ -414,6 +526,29 @@ void PrepareMetalHUD() {
   setenv("MTL_HUD_ENABLED", "1", 0);
   KeepGameResponsive();
 #endif
+}
+// Config/ReFare.ini, which only ReFare writes ([Controls] MenuPad, MenuKey).
+MenuButtonBinding LoadMenuButtonBinding(const std::filesystem::path& directory) {
+  Common::IniFile ini;
+  ini.Load((directory / "Config" / "ReFare.ini").string());
+  MenuButtonBinding binding;
+  auto* section = ini.GetOrCreateSection("Controls");
+  section->Get("MenuPad", &binding.pad, binding.pad);
+  section->Get("MenuKey", &binding.key, binding.key);
+  if (binding.pad.empty() || !BindablePad(binding.pad)) binding.pad = MenuButtonBinding{}.pad;
+  if (binding.key.empty() || !BindableKey(binding.key)) binding.key = MenuButtonBinding{}.key;
+  return binding;
+}
+bool SaveMenuButtonBinding(const std::filesystem::path& directory, const MenuButtonBinding& binding) {
+  Common::IniFile ini;
+  const auto file = (directory / "Config" / "ReFare.ini").string();
+  ini.Load(file);
+  auto* section = ini.GetOrCreateSection("Controls");
+  section->Set("MenuPad", binding.pad);
+  section->Set("MenuKey", binding.key);
+  std::error_code ec;
+  std::filesystem::create_directories(directory / "Config", ec);
+  return !ec && ini.Save(file);
 }
 bool LoadMetalHUDPreference(const std::filesystem::path& directory) {
   Common::IniFile frontend;

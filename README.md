@@ -110,13 +110,20 @@ preserves unrelated GFX settings and keeps the first existing file as
 Press **L1** on a connected DualShock 4 (left shoulder on other SDL gamepads),
 or **Tab** on the keyboard, to open the ReFare options overlay. It is available
 at the title screen and during play; no game-state addresses are assumed.
+Both buttons can be changed from the menu itself (see **Options menu button** below).
 
 - D-pad up/down selects resolution scale, aspect ratio, HUD and menus
-  (Centered/Stretched), FXAA, Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS), or
-  Exit The Game.
+  (Centered/Stretched), FXAA, Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS),
+  options menu button, or Exit The Game.
 - D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
+- **Options menu button**: press Cross/Enter (or click Change), then press the
+  controller button or key that should open the menu from now on. A controller
+  press changes the controller button, a key changes the key; Circle/Escape
+  cancels, and left/right (or Reset) restores L1 / Tab. The D-pad, Cross, Circle,
+  sticks, arrow keys, Enter and Escape can't be used. Saved in
+  `Config/ReFare.ini`.
 - Exit The Game asks "Are you sure?" (No on the left, Yes on the right).
-- Circle or L1 closes the menu. Keyboard alternatives: arrow keys, Enter, and Escape/Tab.
+- Circle or the menu button (L1 by default) closes the menu. Keyboard alternatives: arrow keys, Enter, and Escape or the menu key (Tab by default).
 
 Cmd+Return toggles fullscreen. The game ignores input while another app (for
 example Spotlight) is active.

@@ -211,6 +211,44 @@ int main(int argc, char** argv) {
 #endif
   }
   Check(!refare::OptionsMenuBlocksInput(),"Destroyed menu blocks input");
+  {
+    // Options menu button: rebind the controller button, then the key, cancel, reset.
+    refare::MenuButtonCapture capture{};
+    input={};
+    refare::OptionsMenu menu(directory,[&]{return input;},nullptr,{},[&]{return capture;});
+    const auto frame=[&] {
+      ImGui::NewFrame(); GetVideoEvents().imgui_draw_event.Trigger(); ImGui::Render();
+    };
+    const auto tap=[&](refare::OptionsButton button) {
+      input[button]=true; frame(); input[button]=false; frame();
+    };
+    const auto press=[&](std::string pad, std::string key) {
+      capture.held=true; capture.pad=pad; capture.key=key; frame(); capture={}; frame();
+    };
+    Check(refare::LoadMenuButtonBinding(directory).pad=="Shoulder L" &&
+          refare::LoadMenuButtonBinding(directory).key=="Tab","Menu button default is not L1 / Tab");
+    tap(refare::Toggle); tap(refare::Up); tap(refare::Up);  // second-to-last row
+    input[refare::Confirm]=true; capture.held=true; frame();
+    press("Shoulder R","");  // still held from choosing the row: ignored
+    input[refare::Confirm]=false; capture={}; frame();
+    press("Shoulder R","");
+    auto saved=refare::LoadMenuButtonBinding(directory);
+    Check(saved.pad=="Shoulder R" && saved.key=="Tab","Controller menu button was not rebound");
+    Check(refare::OptionsMenuBlocksInput(),"Rebinding closed the menu");
+    tap(refare::Confirm); press("","F2");
+    saved=refare::LoadMenuButtonBinding(directory);
+    Check(saved.pad=="Shoulder R" && saved.key=="F2","Menu key was not rebound");
+    tap(refare::Confirm); capture.cancel=true; frame(); capture={}; frame();
+    press("Thumb L","");
+    Check(refare::LoadMenuButtonBinding(directory).pad=="Shoulder R","Cancelled rebind still changed the button");
+    tap(refare::Right);
+    saved=refare::LoadMenuButtonBinding(directory);
+    Check(saved.pad=="Shoulder L" && saved.key=="Tab","Reset did not restore L1 / Tab");
+    Check(!refare::SaveMenuButtonBinding(directory,{"Pad N","Escape"}) ||
+          (refare::LoadMenuButtonBinding(directory).pad=="Shoulder L" &&
+           refare::LoadMenuButtonBinding(directory).key=="Tab"),"Menu navigation accepted as the menu button");
+    tap(refare::Toggle);
+  }
   ImGui::DestroyContext(); Config::Shutdown();
-  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, interpolation rates, V-Sync, exit confirmation, HUD default/toggle/persistence, and input release\n";
+  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, interpolation rates, V-Sync, menu button rebinding, exit confirmation, HUD default/toggle/persistence, and input release\n";
 }
