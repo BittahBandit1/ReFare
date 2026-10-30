@@ -6,8 +6,15 @@ Crazy Taxi (GameCube) static recompilation project using
 [ModernGekko](https://github.com/ExpansionPak/ModernGekko).
 
 macOS ARM64 is the first target. Windows and Linux remain planned targets using
-the same upstream CMake runtime and generated game code. Startup and title-screen rendering have been validated on macOS ARM64. Full
-gameplay coverage remains in progress. See [project status](docs/STATUS.md).
+the same upstream CMake runtime and generated game code. Full arcade rounds
+play on an M3 Pro MacBook Pro, including ultrawide aspect ratios. An
+experimental 90-180 FPS frame interpolation mode is included, off by default
+(see [docs/120FPS.md](docs/120FPS.md)). See [project status](docs/STATUS.md).
+
+**You need your own copy of the game.** ReFare contains no game code, data or
+assets. It translates the `main.dol` from your own legally obtained Crazy Taxi
+(USA, GCTE51) disc image and loads the rest of the game's files from it at run
+time.
 
 ## Build on Apple Silicon
 
@@ -194,3 +201,15 @@ so the center stays fixed and element proportions remain unchanged. Z/W and
 perspective projection behavior are preserved. This applies to the game's
 orthographic passes, including 2D transition artwork. It does not alter the
 native ReFare options overlay, which is already rendered in screen coordinates.
+
+## License
+
+ReFare is free software under the [GNU General Public License v3.0](LICENSE).
+Its code is built into ModernGekko and its Dolphin-derived runtime, which are
+GPL-3.0 (see `lib/ModernGekko/LICENSE` and `lib/DolRecomp/LICENSE`). The three
+glyphs used for keyboard button prompts are rendered from Roboto Condensed,
+licensed under the SIL Open Font License 1.1.
+
+ReFare is an unofficial fan project. It is not affiliated with or endorsed by
+SEGA or Nintendo. Crazy Taxi is a trademark of SEGA. No disc image, extracted
+game data or copyrighted game assets are included in this repository.
