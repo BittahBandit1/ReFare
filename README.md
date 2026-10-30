@@ -5,13 +5,13 @@ Crazy Taxi (GameCube) static recompilation project using
 [DolRecomp](https://github.com/ExpansionPak/DolRecomp), and
 [ModernGekko](https://github.com/ExpansionPak/ModernGekko).
 
-macOS ARM64 is the first target. Windows and Linux remain planned targets using
-the same upstream CMake runtime and generated game code. Full arcade rounds
-play on an M3 Pro MacBook Pro, including ultrawide aspect ratios. An
-experimental 90-180 FPS frame interpolation mode is included, off by default
+macOS ARM64 is the first target. Windows, Linux, Android and iOS are currently
+being researched. Full arcade rounds play on an M3 Pro MacBook Pro, 
+including ultrawide aspect ratios. An experimental 90-180 FPS frame 
+interpolation mode is included, off by default
 (see [docs/120FPS.md](docs/120FPS.md)). See [project status](docs/STATUS.md).
 
-**You need your own copy of the game.** ReFare contains no game code, data or
+**You need your own NTSC-U copy of the game.** ReFare contains no game code, data or
 assets. It translates the `main.dol` from your own legally obtained Crazy Taxi
 (USA, GCTE51) disc image and loads the rest of the game's files from it at run
 time.
