@@ -16,6 +16,8 @@ assets. It translates the `main.dol` from your own legally obtained Crazy Taxi
 (USA, GCTE51) disc image and loads the rest of the game's files from it at run
 time.
 
+To facilitate faster loading, the beginning copyright screen and the Acclaim animated video were removed.
+
 ## Build on Apple Silicon
 
 Install Xcode command line tools and `brew install cmake ninja pkg-config`.
