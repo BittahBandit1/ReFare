@@ -20,8 +20,9 @@ Features:
 - Preserved HUD art (Centered by default; Stretched is optional)
 - Touch Controls (experimental)
 
-**You need your own NTSC-U copy of the game.** ReFare contains no game code, data or
-assets. It translates the `main.dol` from your own legally obtained Crazy Taxi
+**You need your own NTSC-U copy of the game.** The source tree contains no game code or disc
+assets. Mobile gameplay release binaries include a precompiled game module;
+you must import the disc assets from your own copy. It translates the `main.dol` from your own legally obtained Crazy Taxi
 (USA, GCTE51) disc image and loads the rest of the game's files from it at run
 time.
 

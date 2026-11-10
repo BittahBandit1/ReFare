@@ -26,9 +26,8 @@ python3 scripts/android.py --sdk build/android-sdk --generated /path/to/dolrecom
 ```
 
 Output: `build/release/ReFare-Android-arm64-test.apk`. It is signed with a local
-ignored debug keystore for USB installation. The generated module makes this
-a private personal build; do not publish the APK containing it. Source and
-public runtime resources can be shared independently.
+ignored debug keystore for USB installation. The generated module is compiled into the app. The 0.2.0 gameplay release
+includes this module; disc images and extracted game assets are not packaged.
 
 ```sh
 adb install -r build/release/ReFare-Android-arm64-test.apk

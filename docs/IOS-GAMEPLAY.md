@@ -33,7 +33,7 @@ Dolphin's Logs. **View Gameplay Log** in the importer shows the latest startup
 log and can copy it for troubleshooting.
 
 The device app and binary target iOS 15.0 minimum. The IPA must be signed by
-your sideloading tool. Keep this personal IPA private: its executable contains
+your sideloading tool. The 0.2.0 gameplay IPA includes
 game-derived native code. No disc image or extracted game assets are bundled.
 
 Build with your own generated C module inputs:
