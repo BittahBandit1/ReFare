@@ -14,10 +14,11 @@ been done on lower end hardware at this time.
 (see [docs/120FPS.md](docs/120FPS.md)). See [project status](docs/STATUS.md).
 
 Features:
-- Faster loading (removed Acclaim animated video)
+- Faster loading
 - Variable aspect ratio (32:9, 21:9, 16:9 etc.)
 - Up to 180Hz gameplay via matrix interpolation
 - Preserved HUD art (Centered by default; Stretched is optional)
+- Touch Controls (experimental)
 
 **You need your own NTSC-U copy of the game.** ReFare contains no game code, data or
 assets. It translates the `main.dol` from your own legally obtained Crazy Taxi
