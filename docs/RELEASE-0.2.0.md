@@ -18,7 +18,7 @@
 
 - **ReFare-v0.2.0-macOS-arm64.zip**: extract ReFare.app on an Apple Silicon Mac running macOS 13+, then import your own supported disc. First-time compilation requires Xcode Command Line Tools, CMake and Ninja. The app is ad-hoc signed and not notarized.
 - **ReFare-0.2.0-Android-arm64.apk**: install on an ARM64 Vulkan-capable Android 8.0+ device, then import your Crazy Taxi USA (GCTE51), revision 0 disc.
-- **ReFare-0.2.0-iOS15-arm64-unsigned.ipa**: sign with your sideloading tool, install on iOS/iPadOS 15+, then import the same game revision.
+- **ReFare-0.2.0-iOS15-arm64.ipa**: sign with your sideloading tool, install on iOS/iPadOS 15+, then import the same game revision.
 - **SHA256SUMS.txt**: download checksums.
 
 The Android and iOS gameplay binaries include the precompiled game module. The macOS app builds the module locally from your own disc. They do not include disc images or extracted disc assets; importing your own supported disc is required. Source builds can generate the module from your own copy.
