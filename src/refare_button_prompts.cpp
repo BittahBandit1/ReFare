@@ -176,7 +176,7 @@ struct ButtonPrompts::Impl {
     const bool poll_keys = key_age < 0.0 && focused && (tick % 8u) == 1u;
     for (const auto& device : g_controller_interface.GetAllDevices()) {
       const bool is_pad = device->GetSource() == "SDL";
-      const bool is_keyboard = !is_pad && device->GetName().find("Keyboard") != std::string::npos;
+      const bool is_keyboard = !is_pad && device->FindInput("F1") && device->FindInput("X");
       have_controller |= is_pad;
       if (!is_pad && !(is_keyboard && poll_keys)) continue;
       for (const auto* input : device->Inputs()) {

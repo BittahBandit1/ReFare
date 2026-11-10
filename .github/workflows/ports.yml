@@ -1,0 +1,55 @@
+name: Desktop ports
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: windows-x86_64
+          - runner: ubuntu-24.04
+            target: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: macos-14
+            target: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+        with:
+          arch: x64
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config g++-14 libasound2-dev libpulse-dev libudev-dev libevdev-dev libx11-dev libxi-dev libxrandr-dev libxext-dev libxfixes-dev libxinerama-dev libxcursor-dev libgl1-mesa-dev libegl1-mesa-dev libwayland-dev libxkbcommon-dev wayland-protocols libdbus-1-dev libusb-1.0-0-dev libcurl4-openssl-dev libssl-dev libbluetooth-dev
+          echo CC=gcc-14 >> "$GITHUB_ENV"
+          echo CXX=g++-14 >> "$GITHUB_ENV"
+      - name: macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake ninja pkg-config
+      - name: Windows dependencies
+        if: runner.os == 'Windows'
+        run: choco install ninja --no-progress -y
+      - name: Build and test without game data
+        run: python scripts/ports.py test --target ${{ matrix.target }} --jobs 3
+      - name: iOS import tests
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p build/ports
+          swiftc -parse-as-library ports/ios/DiscImporter.swift tests/ios_import_test.swift -o build/ports/ios-import-test
+          build/ports/ios-import-test
+          python scripts/ios.py import-app

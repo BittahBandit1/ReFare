@@ -10,9 +10,13 @@
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
 #include "imgui.h"
+#ifdef __APPLE__
+#include "VideoCommon/RefareMetalFX.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <optional>
 #include <cstdlib>
 #include <string>
@@ -40,14 +44,23 @@ constexpr std::array<InterpChoice,6> kInterpChoices = {{
   {"Off",false,0},{"Match display",true,0},{"90 FPS",true,90},
   {"120 FPS",true,120},{"144 FPS",true,144},{"180 FPS",true,180}}};
 
-enum class Row { Scale, Aspect, HudLayout, FXAA, Interpolation, VSync, MetalHUD, MenuButton, Exit };
+enum class Row { Scale, Aspect, HudLayout, FXAA, MetalFX, Interpolation, VSync, MetalHUD, MenuButton, Exit };
 const std::vector<Row>& Rows() {
   static const std::vector<Row> rows = {Row::Scale, Row::Aspect, Row::HudLayout, Row::FXAA,
-    Row::Interpolation, Row::VSync,
+#ifdef __APPLE__
+    Row::MetalFX,
+#endif
+    Row::Interpolation,
+#ifndef REFARE_IOS
+    Row::VSync,
+#endif
 #ifdef __APPLE__
     Row::MetalHUD,
 #endif
-    Row::MenuButton, Row::Exit};
+#if !defined(REFARE_IOS) && !defined(REFARE_ANDROID)
+    Row::MenuButton,
+#endif
+    Row::Exit};
   return rows;
 }
 const char* RowLabel(Row row) {
@@ -56,6 +69,7 @@ const char* RowLabel(Row row) {
   case Row::Aspect: return "Aspect ratio";
   case Row::HudLayout: return "HUD and menus";
   case Row::FXAA: return "FXAA";
+  case Row::MetalFX: return "MetalFX spatial upscaling";
   case Row::Interpolation: return "Interpolation (experimental)";
   case Row::VSync: return "V-Sync";
   case Row::MetalHUD: return "Metal HUD";
@@ -89,9 +103,13 @@ bool BindablePad(const std::string& n) {
   return n != "Button S" && n != "Button E";
 }
 bool BindableKey(const std::string& n) {
-  for (const char* p : {"Click","Cursor","Axis","Scroll","Up","Down","Left","Right"})
-    if (n.starts_with(p)) return false;
-  return n != "Escape" && n != "Return" && n != "Keypad Enter";
+  std::string upper = n;
+  std::transform(upper.begin(), upper.end(), upper.begin(),
+                 [](unsigned char c) { return char(std::toupper(c)); });
+  for (const char* p : {"CLICK","CURSOR","AXIS","SCROLL","UP","DOWN","LEFT","RIGHT"})
+    if (upper.starts_with(p)) return false;
+  return upper != "ESCAPE" && upper != "RETURN" && upper != "KEYPAD ENTER" &&
+         upper != "NUMPADENTER" && upper != "KP_ENTER";
 }
 
 MenuButtonCapture ReadCapture() {
@@ -99,11 +117,11 @@ MenuButtonCapture ReadCapture() {
   if (!Host_RendererHasFocus() || !g_controller_interface.IsInit()) return result;
   for (const auto& device : g_controller_interface.GetAllDevices()) {
     const bool pad = device->GetSource() == "SDL";
-    if (!pad && device->GetName().find("Keyboard") == std::string::npos) continue;
+    if (!pad && !(device->FindInput("F1") && device->FindInput("X"))) continue;
     for (const auto* input : device->Inputs()) {
       if (!input->IsDetectable() || input->GetState() <= 0.5) continue;
       const std::string name = input->GetName();
-      if (pad ? name == "Button E" : name == "Escape") { result.cancel = true; continue; }
+      if (pad ? name == "Button E" : (name == "Escape" || name == "ESCAPE")) { result.cancel = true; continue; }
       if (pad ? !BindablePad(name) : !BindableKey(name)) {
         // Navigation still down from choosing the row (e.g. Cross, Enter) must be
         // released first; sticks, motion sensors and the mouse never count.
@@ -130,6 +148,14 @@ Buttons ReadButtons() {
   for (const auto& device : g_controller_interface.GetAllDevices()) {
     const auto held = [&](std::string_view name) {
       auto* input = device->FindInput(name);
+      // DirectInput uses TAB/RETURN/ESCAPE/UP, while Quartz and Xlib
+      // expose mixed-case names. Keep saved bindings usable on each backend.
+      if (!input && device->GetSource() != "SDL") {
+        std::string upper(name);
+        std::transform(upper.begin(), upper.end(), upper.begin(),
+                       [](unsigned char c) { return char(std::toupper(c)); });
+        input = device->FindInput(upper);
+      }
       return input && input->GetState() > 0.5;
     };
     if (device->GetSource() == "SDL") {
@@ -145,7 +171,7 @@ Buttons ReadButtons() {
       result[Left] |= held("Left Arrow") || held("Left");
       result[Right] |= held("Right Arrow") || held("Right");
       result[Back] |= held("Escape");
-      result[Confirm] |= held("Return") || held("Keypad Enter");
+      result[Confirm] |= held("Return") || held("Keypad Enter") || held("NUMPADENTER") || held("KP_Enter");
     }
   }
   return result;
@@ -230,12 +256,14 @@ struct OptionsMenu::Impl {
   }
   void ApplyScale() {
     Config::SetBaseOrCurrent(Config::GFX_EFB_SCALE, scales[scale_index].value);
-    // The frontend applies this setting at boot; keep it in sync with GFX.ini.
+#if !defined(REFARE_IOS) && !defined(REFARE_ANDROID)
+    // The desktop frontend applies this setting at boot; keep it in sync with GFX.ini.
     Common::IniFile frontend;
     const auto file = (directory / "config.ini").string();
     if (!frontend.Load(file)) { save_error = "Could not read settings; change applies this session."; return; }
     frontend.GetOrCreateSection("Video")->Set("resolution", std::string(scales[scale_index].resolution));
     if (!frontend.Save(file)) { save_error = "Could not save resolution; change applies this session."; return; }
+#endif
     SaveGraphics([&](Common::IniFile& ini) {
       ini.GetOrCreateSection("Settings")->Set("InternalResolution", scales[scale_index].value);
     });
@@ -295,7 +323,11 @@ struct OptionsMenu::Impl {
     SetMetalHUDVisible(render_view, metal_hud);
     Common::IniFile frontend;
     const auto file = (directory / "config.ini").string();
+#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
+    frontend.Load(file);
+#else
     if (!frontend.Load(file)) { save_error = "Could not read settings; HUD change applies this session."; return; }
+#endif
     frontend.GetOrCreateSection("Video")->Set("metal_hud", metal_hud);
     save_error = frontend.Save(file) ? "" : "Could not save HUD setting; change applies this session.";
   }
@@ -331,13 +363,22 @@ struct OptionsMenu::Impl {
     }
     case Row::HudLayout: center_hud = !center_hud; ApplyHudLayout(); break;
     case Row::FXAA: fxaa = !fxaa; ApplyFXAA(); break;
+    case Row::MetalFX:
+#ifdef __APPLE__
+      if (Config::Get(Config::GFX_METALFX_SPATIAL) || RefareMetalFX::GetSupport() == RefareMetalFX::Support::Available) {
+        const bool enabled = !Config::Get(Config::GFX_METALFX_SPATIAL);
+        Config::SetBaseOrCurrent(Config::GFX_METALFX_SPATIAL, enabled);
+        SaveGraphics([&](Common::IniFile& ini) { ini.GetOrCreateSection("Enhancements")->Set("MetalFXSpatial",enabled); });
+      }
+#endif
+      break;
     case Row::Interpolation: {
       const int count = static_cast<int>(kInterpChoices.size());
       interp_index = (interp_index + delta + count) % count;
       ApplyInterpolation(); break;
     }
     case Row::VSync: vsync = !vsync; ApplyVSync(); break;
-    case Row::MetalHUD: metal_hud = !metal_hud; ApplyMetalHUD(); break;
+    case Row::MetalHUD: if (MetalHUDSupported()) { metal_hud = !metal_hud; ApplyMetalHUD(); } break;
     case Row::MenuButton:  // Left/Right restore the default L1 / Tab.
       if (binding.pad != MenuButtonBinding{}.pad || binding.key != MenuButtonBinding{}.key) {
         binding = MenuButtonBinding{}; SaveMenuButton();
@@ -350,7 +391,7 @@ struct OptionsMenu::Impl {
     switch (CurrentRow()) {
     case Row::Exit: confirm_exit = true; exit_choice = 0; break;
     case Row::MenuButton: StartCapture(); break;
-    case Row::HudLayout: case Row::FXAA: case Row::Interpolation: case Row::VSync: case Row::MetalHUD: Step(1); break;
+    case Row::HudLayout: case Row::FXAA: case Row::MetalFX: case Row::Interpolation: case Row::VSync: case Row::MetalHUD: Step(1); break;
     default: break;
     }
   }
@@ -366,6 +407,16 @@ struct OptionsMenu::Impl {
     case Row::Aspect: return aspects[aspect_index].label;
     case Row::HudLayout: return center_hud ? "Centered (4:3)" : "Stretched";
     case Row::FXAA: return fxaa ? "On" : "Off";
+    case Row::MetalFX:
+#ifdef __APPLE__
+      switch (RefareMetalFX::GetSupport()) {
+      case RefareMetalFX::Support::NotReady: return "Waiting for renderer";
+      case RefareMetalFX::Support::Unavailable: return "Unavailable (OS / GPU)";
+      case RefareMetalFX::Support::Failed: return "Unavailable (fallback active)";
+      case RefareMetalFX::Support::Available: return Config::Get(Config::GFX_METALFX_SPATIAL) ? "On" : "Off";
+      }
+#endif
+      return "Unavailable";
     case Row::Interpolation: {
       if (interp_index != 1) return kInterpChoices[interp_index].label;
       const double rate = RefareFrameInterpolation::OutputRate();
@@ -374,7 +425,7 @@ struct OptionsMenu::Impl {
       return value_text.c_str();
     }
     case Row::VSync: return vsync ? "On" : "Off";
-    case Row::MetalHUD: return metal_hud ? "On" : "Off";
+    case Row::MetalHUD: return MetalHUDSupported() ? (metal_hud ? "On" : "Off") : "Unavailable on this OS";
     case Row::MenuButton:
       if (capturing) return "Press a button or key...";
       binding_text = PadLabel(binding.pad) + " / " + binding.key;
@@ -403,8 +454,13 @@ struct OptionsMenu::Impl {
   }
   void DrawConfirmExit() {
     const auto& io = ImGui::GetIO();
+#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
+    const float unit = std::max(1.0f, io.DisplayFramebufferScale.x);
+#else
+    const float unit = 1.0f;
+#endif
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*0.5f,io.DisplaySize.y*0.5f),ImGuiCond_Always,ImVec2(0.5f,0.5f));
-    ImGui::SetNextWindowSize(ImVec2(std::min(360.0f, io.DisplaySize.x - 24.0f),0));
+    ImGui::SetNextWindowSize(ImVec2(std::min(360.0f*unit, io.DisplaySize.x - 24.0f*unit),0));
     ImGui::SetNextWindowFocus();
     ImGui::Begin("ReFare exit",nullptr,ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove);
     const char* question = "Are you sure?";
@@ -418,7 +474,7 @@ struct OptionsMenu::Impl {
       const bool highlighted = exit_choice == choice;
       ImGui::PushStyleColor(ImGuiCol_Button, highlighted ? ImVec4(1,0.75f,0.12f,1) : ImVec4(0.23f,0.25f,0.29f,1));
       ImGui::PushStyleColor(ImGuiCol_Text, highlighted ? ImVec4(0.05f,0.05f,0.05f,1) : ImVec4(1,1,1,1));
-      if (ImGui::Button(choice ? "Yes" : "No", ImVec2(button, 38))) {
+      if (ImGui::Button(choice ? "Yes" : "No", ImVec2(button, 42*unit))) {
         exit_choice = choice;
         if (choice) FinishExit(); else confirm_exit = false;
       }
@@ -437,9 +493,14 @@ struct OptionsMenu::Impl {
       // With MTL_HUD_ENABLED set at launch the HUD is already visible. Only
       // touch the layer for a saved Off; re-enabling it here would register a
       // second, layer-only HUD that cannot measure GPU time.
+#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
+      SetMetalHUDVisible(render_view, metal_hud);
+#else
       if (!metal_hud) SetMetalHUDVisible(render_view, false);
+#endif
       hud_applied = true;
     }
+    const int previous_selected = selected;
     const Buttons down = input_source();
     Buttons pressed{};
     for (int i=0;i<Count;++i) pressed[i] = down[i] && !previous[i];
@@ -455,14 +516,27 @@ struct OptionsMenu::Impl {
     s_blocks_input = open || drain;
     if (!open) return;
     const auto& io = ImGui::GetIO();
-    const float width = std::min(520.0f, io.DisplaySize.x - 24.0f);
+#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
+    const float unit = std::max(1.0f, io.DisplayFramebufferScale.x);
+#else
+    const float unit = 1.0f;
+#endif
+    const float width = std::min(520.0f * unit, io.DisplaySize.x - 24.0f * unit);
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x*0.5f,io.DisplaySize.y*0.5f),ImGuiCond_Always,ImVec2(0.5f,0.5f));
+#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
+    ImGui::SetNextWindowSize(ImVec2(width, std::min(690.0f * unit, io.DisplaySize.y - 32.0f * unit)));
+#else
     ImGui::SetNextWindowSize(ImVec2(width,0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(24,22));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,12);
+#endif
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,ImVec2(24*unit,22*unit));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,12*unit);
     ImGui::PushStyleColor(ImGuiCol_WindowBg,ImVec4(0.055f,0.065f,0.08f,0.98f));
     ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(0.23f,0.25f,0.29f,1));
-    ImGui::Begin("ReFare options",nullptr,ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_AlwaysAutoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoMove;
+#if !defined(REFARE_IOS) && !defined(REFARE_ANDROID)
+    flags |= ImGuiWindowFlags_AlwaysAutoResize;
+#endif
+    ImGui::Begin("ReFare options",nullptr,flags);
     ImGui::TextColored(ImVec4(1,0.75f,0.12f,1),"REFARE  /  OPTIONS");
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
     const auto& rows = Rows();
@@ -482,16 +556,17 @@ struct OptionsMenu::Impl {
         ImGui::Separator(); ImGui::Spacing();
         const bool highlighted = selected == index;
         ImGui::PushStyleColor(ImGuiCol_Button, highlighted ? ImVec4(0.72f,0.16f,0.14f,1) : ImVec4(0.23f,0.25f,0.29f,1));
-        if (ImGui::Button(RowLabel(row), ImVec2(-1,36))) { selected = index; Activate(); }
+        if (ImGui::Button(RowLabel(row), ImVec2(-1,36*unit))) { selected = index; Activate(); }
         ImGui::PopStyleColor();
       } else {
         if (ImGui::Selectable(RowLabel(row),selected==index)) selected=index;
-        if (ImGui::Button("<",ImVec2(42,32))) {selected=index; Step(-1);}
+        if (ImGui::Button("<",ImVec2(42*unit,36*unit))) {selected=index; Step(-1);}
         ImGui::SameLine();
         ImGui::TextUnformatted(RowValue(row));
-        ImGui::SameLine(ImGui::GetWindowWidth()-ImGui::GetStyle().WindowPadding.x-42);
-        if (ImGui::Button(">",ImVec2(42,32))) {selected=index; Step(1);}
+        ImGui::SameLine(ImGui::GetWindowWidth()-ImGui::GetStyle().WindowPadding.x-42*unit);
+        if (ImGui::Button(">",ImVec2(42*unit,36*unit))) {selected=index; Step(1);}
       }
+      if (selected == index && selected != previous_selected) ImGui::SetScrollHereY(0.5f);
       ImGui::Spacing(); ImGui::PopID();
     }
     ImGui::Separator(); ImGui::Spacing();
@@ -499,13 +574,21 @@ struct OptionsMenu::Impl {
     if (capturing) {
       ImGui::TextWrapped("Press the controller button or key that should open this menu. Circle / Escape: cancel.");
     } else {
+#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
+#ifdef REFARE_ANDROID
+      ImGui::TextWrapped("L1: close. D-pad: select / change. A: confirm.");
+#else
+      ImGui::TextWrapped("Three-finger tap: close. Swipe to scroll.");
+#endif
+#else
       const std::string pad = "D-pad: select / change     Cross: select     " + PadLabel(s_menu_binding.pad) + " or Circle: close";
       const std::string keys = "Keyboard: " + s_menu_binding.key + ", arrow keys, Enter, Escape";
       ImGui::TextDisabled("%s", pad.c_str());
       ImGui::TextDisabled("%s", keys.c_str());
+#endif
     }
     if (!save_error.empty()) ImGui::TextWrapped("%s",save_error.c_str());
-    if (ImGui::Button("Done",ImVec2(-1,34))) Close();
+    if (ImGui::Button("Done",ImVec2(-1,38*unit))) Close();
     ImGui::End();
     ImGui::PopStyleColor(2); ImGui::PopStyleVar(2);
     if (confirm_exit) DrawConfirmExit();

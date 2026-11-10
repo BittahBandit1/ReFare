@@ -1,6 +1,8 @@
 # Project status
 
-Initial target: macOS ARM64. Windows and Linux are future targets.
+Initial target: macOS ARM64. Windows x86-64, Linux x86-64/ARM64 and iOS
+development targets are described in [PORTS.md](PORTS.md). New build paths
+are not yet validated platform releases.
 
 ## Completed
 
@@ -19,6 +21,15 @@ Initial target: macOS ARM64. Windows and Linux are future targets.
 - Extracted main.dol and 143 game asset files; no `.rel` files found.
 - Generated initial Gekko C output: 56 chunks, 222,640 decoded instruction slots,
   16 classified as embedded data, zero unknown instructions.
+
+## iOS gameplay development (2026-11-08)
+
+- Personal iOS 15 ARM64 gameplay IPA builds and links the static game module.
+- UIKit/Metal rendering host, RemoteIO audio, GameController/touch controls,
+  background pause, exit and accessible startup logs are integrated.
+- JIT fallback, generated vertex loaders and JIT fault handlers are disabled
+  on iOS. Import and public portability fixtures pass.
+- Physical-device gameplay remains unverified. See [IOS-GAMEPLAY.md](IOS-GAMEPLAY.md).
 
 ## User testing
 

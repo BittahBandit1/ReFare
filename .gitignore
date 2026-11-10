@@ -20,3 +20,5 @@ Thumbs.db
 *.rvz
 *.wbfs
 .env
+__pycache__/
+*.pyc

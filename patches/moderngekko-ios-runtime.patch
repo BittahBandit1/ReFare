@@ -1,0 +1,241 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -5,6 +5,18 @@
+     project(ModernGekko LANGUAGES C CXX)
+ endif()
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
++    set(CMAKE_SYSTEM_PROCESSOR arm64)
++    add_compile_definitions(REFARE_IOS=1)
++    set(USE_SYSTEM_LIBS OFF CACHE STRING "" FORCE)
++    set(HAVE_PIPE2 OFF CACHE BOOL "Not available at the iOS 15 deployment target" FORCE)
++    set(BUNDLE_SPEEX ON CACHE BOOL "" FORCE)
++endif()
++if(ANDROID AND REFARE_ANDROID)
++    add_compile_definitions(REFARE_ANDROID=1)
++    set(USE_SYSTEM_LIBS OFF CACHE STRING "" FORCE)
++    set(ENABLE_SDL OFF CACHE BOOL "" FORCE)
++endif()
+ include(CTest)
+ include(CheckIncludeFileCXX)
+ 
+@@ -105,7 +117,9 @@
+     set(ENCODE_FRAMEDUMPS OFF CACHE BOOL "" FORCE)
+     set(ENABLE_LLVM OFF CACHE BOOL "" FORCE)
+     # Cubeb is Dolphin's only audio backend on macOS
+-    if(APPLE OR WIN32)
++    if(IOS)
++        set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
++    elseif(APPLE OR WIN32)
+         set(ENABLE_CUBEB ON CACHE BOOL "" FORCE)
+     else()
+         set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
+@@ -113,7 +127,11 @@
+     set(ENABLE_HWDB OFF CACHE BOOL "" FORCE)
+     set(ENABLE_EVDEV OFF CACHE BOOL "" FORCE)
+     set(ENABLE_WAYLAND ON CACHE BOOL "" FORCE)
+-    set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
++    if(ANDROID)
++        set(ENABLE_EGL ON CACHE BOOL "" FORCE)
++    else()
++        set(ENABLE_EGL OFF CACHE BOOL "" FORCE)
++    endif()
+     set(USE_SYSTEM_SDL3 OFF CACHE BOOL "" FORCE)
+     # SDL bundles its own copy of the macOS hidapi backend
+     if(APPLE)
+@@ -245,7 +263,7 @@
+         vendor/dolphin/Source/Core/DolphinNoGUI/Platform.cpp
+         vendor/dolphin/Source/Core/DolphinNoGUI/PlatformHeadless.cpp
+     )
+-    if(NOT ANDROID)
++    if(NOT ANDROID OR REFARE_ANDROID)
+         target_sources(moderngekko PRIVATE
+             vendor/dolphin/Source/Core/InputCommon/ControllerInterface/Touch/InputOverrider.cpp)
+     endif()
+@@ -255,7 +273,7 @@
+             vendor/dolphin/Source/Core/DolphinNoGUI/PlatformWin32.cpp)
+         target_link_libraries(moderngekko PRIVATE dwmapi)
+     endif()
+-    if(APPLE)
++    if(APPLE AND NOT IOS)
+         # Dolphin's windowed backend for macOS
+         target_sources(moderngekko PRIVATE
+             vendor/dolphin/Source/Core/DolphinNoGUI/PlatformMacos.mm)
+@@ -294,6 +312,16 @@
+         target_sources(refare-options-test PRIVATE tools/frontend_config.cpp)
+         target_include_directories(refare-options-test PRIVATE "${REFARE_OPTIONS_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/tools" "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
+         target_link_libraries(refare-options-test PRIVATE moderngekko imgui fmt::fmt)
++        if(APPLE AND NOT IOS)
++            add_executable(refare-ios-metalfx-menu-test EXCLUDE_FROM_ALL
++                "${REFARE_OPTIONS_SOURCE_DIR}/../tests/ios_metalfx_menu_test.mm"
++                "${REFARE_OPTIONS_SOURCE_DIR}/refare_options.cpp")
++            target_compile_definitions(refare-ios-metalfx-menu-test PRIVATE REFARE_IOS=1)
++            target_compile_features(refare-ios-metalfx-menu-test PRIVATE cxx_std_23)
++            target_include_directories(refare-ios-metalfx-menu-test PRIVATE
++                "${REFARE_OPTIONS_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core")
++            target_link_libraries(refare-ios-metalfx-menu-test PRIVATE moderngekko imgui fmt::fmt)
++        endif()
+     endif()
+     if(TARGET PkgConfig::X11)
+         target_sources(moderngekko PRIVATE
+@@ -417,7 +445,7 @@
+     PRIVATE ModernGekko::Runtime
+ )
+ 
+-if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
++if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME AND NOT REFARE_ANDROID)
+     if(TARGET SDL3-static)
+         set(_moderngekko_sdl_target SDL3-static)
+     elseif(TARGET SDL3::SDL3-shared)
+@@ -1079,3 +1107,8 @@
+     add_test(NAME moderngekko.dolphin_shader
+              COMMAND moderngekko_dolphin_shader_test)
+ endif()
++
++if(IOS AND REFARE_IOS_APP_SOURCE_DIR)
++    enable_language(Swift)
++    add_subdirectory("${REFARE_IOS_APP_SOURCE_DIR}" refare-ios)
++endif()
+diff --git a/include/moderngekko/runtime.hpp b/include/moderngekko/runtime.hpp
+--- a/include/moderngekko/runtime.hpp
++++ b/include/moderngekko/runtime.hpp
+@@ -4,6 +4,7 @@
+ #include "moderngekko/module_abi.h"
+ 
+ #include <filesystem>
++#include <functional>
+ #include <memory>
+ #include <optional>
+ #include <string>
+@@ -43,6 +44,7 @@
+ struct InputSettings
+ {
+   bool background_input = false;
++  std::function<bool()> blocks_input;
+ };
+ 
+ struct AutomationSettings
+@@ -67,6 +69,10 @@
+   AudioSettings audio;
+   InputSettings input;
+   WindowSystem window_system = WindowSystem::Default;
++  // iOS: caller retains the UIView and CAMetalLayer until Run() returns.
++  void* native_window = nullptr;
++  void* native_metal_layer = nullptr;
++  float native_surface_scale = 1.0f;
+   bool headless = false;
+   bool fullscreen = false;
+   bool allow_interpreter = false;
+diff --git a/src/runtime/dolphin_runtime.cpp b/src/runtime/dolphin_runtime.cpp
+--- a/src/runtime/dolphin_runtime.cpp
++++ b/src/runtime/dolphin_runtime.cpp
+@@ -62,6 +62,7 @@
+ std::string s_window_title;
+ bool s_show_fps_in_title = true;
+ bool s_external_ui_common = false;
++std::function<bool()> s_input_blocker;
+ std::unique_ptr<BootSessionData> s_boot_session_data;
+ u64 s_previous_net_wait_ns = 0;
+ double s_net_wait_ms_per_second = 0.0;
+@@ -101,7 +102,43 @@
+                      s_net_wait_ms_per_second, telemetry.buffer_size);
+ }
+ 
++#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
++class IOSPlatform final : public Platform {
++public:
++  explicit IOSPlatform(const moderngekko::RuntimeConfig& config) {
++#ifdef REFARE_ANDROID
++    m_wsi.type = WindowSystemType::Android;
++#else
++    m_wsi.type = WindowSystemType::IOS;
++#endif
++    m_wsi.render_window = config.native_window;
++    m_wsi.render_surface = config.native_metal_layer;
++    m_wsi.render_surface_scale = config.native_surface_scale;
++  }
++  bool Init() override {
++#ifdef REFARE_ANDROID
++    return m_wsi.render_window != nullptr;
++#else
++    return m_wsi.render_window && m_wsi.render_surface;
++#endif
++  }
++  WindowSystemInfo GetWindowSystemInfo() const override { return m_wsi; }
++  void MainLoop() override {
++    while (IsRunning()) {
++      UpdateRunningFlag();
++      Core::HostDispatchJobs(Core::System::GetInstance());
++      std::this_thread::sleep_for(std::chrono::milliseconds(4));
++    }
++  }
++private:
++  WindowSystemInfo m_wsi;
++};
++#endif
++
+ PowerPC::CPUCore SelectCPUCore() {
++#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
++  return PowerPC::CPUCore::StaticRecomp;
++#else
+   static const bool static_recomp = [] {
+     const char *v = std::getenv("MODERNGEKKO_STATICRECOMP");
+     return !v || !*v || *v != '0';
+@@ -113,6 +150,7 @@
+ #else
+   return PowerPC::CPUCore::JIT64;
+ #endif
++#endif
+ }
+ } // namespace
+ 
+@@ -120,6 +158,7 @@
+ void Host_PPCSymbolsChanged() {}
+ void Host_PPCBreakpointsChanged() {}
+ bool Host_UIBlocksControllerState() {
++  if (s_input_blocker && s_input_blocker()) return true;
+ #ifdef REFARE_OPTIONS_MENU
+   return refare::OptionsMenuBlocksInput();
+ #else
+@@ -648,6 +687,9 @@
+ 
+   if (impl->config.headless)
+     impl->platform = Platform::CreateHeadlessPlatform();
++#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
++  else impl->platform = std::make_unique<IOSPlatform>(impl->config);
++#endif
+ #ifdef _WIN32
+   else
+     impl->platform = Platform::CreateWin32Platform();
+@@ -690,6 +732,14 @@
+   impl->platform->SetTitle(impl->title);
+ 
+   Config::SetBase(Config::MAIN_CPU_CORE, SelectCPUCore());
++#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
++  Config::SetBase(Config::MAIN_LARGE_ENTRY_POINTS_MAP, false);
++  Config::SetBase(Config::MAIN_FASTMEM, false);
++  Config::SetBase(Config::MAIN_FASTMEM_ARENA, false);
++  Config::SetBase(Config::MAIN_DSP_JIT, false);
++  Config::SetBase(Config::MAIN_DSP_HLE, true);
++  Config::SetBase(Config::GFX_VERTEX_LOADER_TYPE, VertexLoaderType::Software);
++#endif
+   if (!impl->config.graphics.backend.empty())
+     Config::SetBase(Config::MAIN_GFX_BACKEND, impl->config.graphics.backend);
+   else if (impl->config.headless)
+@@ -743,6 +793,7 @@
+   jit.SetStaticRecompModuleSource(std::move(recomp_source));
+ 
+   s_runtime_active = true;
++  s_input_blocker = impl->config.input.blocks_input;
+   s_platform = impl->platform.get();
+   s_window_title = impl->title;
+   s_show_fps_in_title = impl->config.show_fps_in_title;
+@@ -774,6 +825,7 @@
+   s_window_title.clear();
+   s_show_fps_in_title = true;
+   s_runtime_active = false;
++  s_input_blocker = {};
+ }
+ 
+ void Runtime::StopAutomation() {

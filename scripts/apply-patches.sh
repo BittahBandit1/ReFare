@@ -10,6 +10,9 @@ apply_patch() {
     git -C "$repo" apply --check "$patch"
     git -C "$repo" apply "$patch"
 }
+# The Python entry point handles overlapping, already-applied patch stacks.
+exec python3 "$root/scripts/apply-patches.py"
+# Ordered patch manifest (read by apply-patches.py):
 apply_patch lib/ModernGekko moderngekko-path-quoting.patch
 apply_patch lib/ModernGekko/vendor/dolphin recompcore-path-quoting.patch
 apply_patch lib/ModernGekko moderngekko-options-runtime.patch
@@ -24,3 +27,9 @@ apply_patch lib/ModernGekko/vendor/dolphin recompcore-present-catch-up.patch
 apply_patch lib/ModernGekko/vendor/dolphin recompcore-frame-interpolation.patch
 apply_patch lib/ModernGekko/vendor/dolphin recompcore-prompt-textures.patch
 apply_patch lib/ModernGekko/vendor/dolphin recompcore-test-runner.patch
+apply_patch lib/ModernGekko/vendor/dolphin recompcore-static-module.patch
+apply_patch lib/ModernGekko moderngekko-portability.patch
+apply_patch lib/ModernGekko moderngekko-refare-launcher.patch
+apply_patch lib/ModernGekko moderngekko-ios-runtime.patch
+apply_patch lib/ModernGekko/vendor/dolphin recompcore-ios-runtime.patch
+apply_patch lib/ModernGekko/vendor/dolphin/Externals/watcher/watcher watcher-ios-portability.patch

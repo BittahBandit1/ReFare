@@ -1,0 +1,14 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a2bfd24..b066385 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -660,7 +660,8 @@ if(WIN32)
+             moderngekko-module-info
+             moderngekko-run
+             moderngekko-launcher
+-            moderngekko-port)
++            moderngekko-port
++            refare-options-test)
+         if(TARGET ${_moderngekko_windows_target})
+             target_compile_definitions(${_moderngekko_windows_target} PRIVATE
+                 WIN32_LEAN_AND_MEAN NOMINMAX)

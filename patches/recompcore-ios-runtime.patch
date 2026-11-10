@@ -1,0 +1,827 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -334,6 +334,10 @@
+   endif()
+ endif()
+ 
++if(IOS)
++  find_library(COREFOUNDATION_LIBRARY CoreFoundation REQUIRED)
++  find_library(FOUNDATION_LIBRARY Foundation REQUIRED)
++endif()
+ if(CMAKE_SYSTEM_NAME MATCHES "Darwin")
+   if(NOT MACOS_USE_DEFAULT_SEARCH_PATH)
+     # Hack up the path to prioritize the path to built-in OS libraries to
+@@ -661,7 +665,7 @@
+   endif()
+ endif()
+ 
+-if(NOT (WIN32 AND _M_ARM_64))
++if(NOT IOS AND NOT (WIN32 AND _M_ARM_64))
+   # OpenGL is available on all platforms except windows-arm64
+   add_definitions(-DHAS_OPENGL)
+ endif()
+@@ -715,7 +719,7 @@
+   add_definitions(-DHAVE_CUBEB)
+ endif()
+ 
+-if(NOT ANDROID)
++if(NOT ANDROID AND NOT IOS)
+   dolphin_find_optional_system_library(LibUSB Externals/libusb)
+   add_definitions(-D__LIBUSB__)
+ endif()
+@@ -743,7 +747,7 @@
+ 
+ dolphin_find_optional_system_library(CURL Externals/curl)
+ 
+-if(NOT ANDROID)
++if(NOT ANDROID AND NOT IOS)
+   dolphin_find_optional_system_library(HIDAPI Externals/hidapi)
+ endif()
+ 
+diff --git a/Source/CMakeLists.txt b/Source/CMakeLists.txt
+--- a/Source/CMakeLists.txt
++++ b/Source/CMakeLists.txt
+@@ -80,7 +80,7 @@
+ endif()
+ 
+ add_subdirectory(Core)
+-if (ANDROID)
++if (ANDROID AND NOT REFARE_ANDROID)
+   add_subdirectory(Android/jni)
+ endif()
+ 
+diff --git a/Source/Core/AudioCommon/AudioCommon.cpp b/Source/Core/AudioCommon/AudioCommon.cpp
+--- a/Source/Core/AudioCommon/AudioCommon.cpp
++++ b/Source/Core/AudioCommon/AudioCommon.cpp
+@@ -28,8 +28,21 @@
+ constexpr int AUDIO_VOLUME_MIN = 0;
+ constexpr int AUDIO_VOLUME_MAX = 100;
+ 
++#ifdef REFARE_ANDROID
++std::unique_ptr<SoundStream> CreateAAudioSoundStream();
++#endif
++#ifdef REFARE_IOS
++std::unique_ptr<SoundStream> CreateIOSSoundStream();
++#endif
++
+ static std::unique_ptr<SoundStream> CreateSoundStreamForBackend(std::string_view backend)
+ {
++#ifdef REFARE_ANDROID
++  if (backend == "AAudio") return CreateAAudioSoundStream();
++#endif
++#ifdef REFARE_IOS
++  if (backend == "iOS") return CreateIOSSoundStream();
++#endif
+   if (backend == BACKEND_CUBEB && CubebStream::IsValid())
+     return std::make_unique<CubebStream>();
+   else if (backend == BACKEND_OPENAL && OpenALStream::IsValid())
+@@ -98,6 +111,12 @@
+ 
+ std::string GetDefaultSoundBackend()
+ {
++#ifdef REFARE_ANDROID
++  return "AAudio";
++#endif
++#ifdef REFARE_IOS
++  return "iOS";
++#endif
+ #if defined(ANDROID)
+   return BACKEND_OPENSLES;
+ #else
+@@ -121,6 +140,12 @@
+ std::vector<std::string> GetSoundBackends()
+ {
+   std::vector<std::string> backends;
++#ifdef REFARE_ANDROID
++  backends.emplace_back("AAudio");
++#endif
++#ifdef REFARE_IOS
++  backends.emplace_back("iOS");
++#endif
+ 
+   backends.emplace_back(BACKEND_NULLSOUND);
+   if (CubebStream::IsValid())
+diff --git a/Source/Core/AudioCommon/CMakeLists.txt b/Source/Core/AudioCommon/CMakeLists.txt
+--- a/Source/Core/AudioCommon/CMakeLists.txt
++++ b/Source/Core/AudioCommon/CMakeLists.txt
+@@ -23,7 +23,7 @@
+   target_link_libraries(audiocommon PRIVATE cubeb)
+ endif()
+ 
+-if(ANDROID)
++if(ANDROID AND NOT REFARE_ANDROID)
+   find_package(OpenSLES)
+   if(OPENSLES_FOUND)
+     message(STATUS "OpenSLES found, enabling OpenSLES sound backend")
+@@ -98,3 +98,8 @@
+   # Add precompiled header
+   target_link_libraries(audiocommon PRIVATE use_pch)
+ endif()
++
++if(IOS)
++  target_sources(audiocommon PRIVATE IOSSoundStream.mm)
++  target_link_libraries(audiocommon PRIVATE "-framework AudioToolbox")
++endif()
+diff --git a/Source/Core/AudioCommon/IOSSoundStream.mm b/Source/Core/AudioCommon/IOSSoundStream.mm
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/AudioCommon/IOSSoundStream.mm
+@@ -0,0 +1,58 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#include "AudioCommon/SoundStream.h"
++#include <AudioToolbox/AudioToolbox.h>
++#include <algorithm>
++#include <atomic>
++#include <cstring>
++
++namespace AudioCommon {
++namespace {
++class IOSSoundStream final : public SoundStream {
++  AudioUnit unit = nullptr;
++  std::atomic<float> volume{1.0f};
++  static OSStatus Render(void* context, AudioUnitRenderActionFlags*,
++                         const AudioTimeStamp*, UInt32, UInt32 frames,
++                         AudioBufferList* output) {
++    auto& self = *static_cast<IOSSoundStream*>(context);
++    if (!output || output->mNumberBuffers != 1 || !output->mBuffers[0].mData ||
++        output->mBuffers[0].mDataByteSize < frames * 4) return kAudio_ParamError;
++    auto* samples = static_cast<short*>(output->mBuffers[0].mData);
++    self.m_mixer->Mix(samples, frames);
++    const float gain = self.volume.load(std::memory_order_relaxed);
++    for (UInt32 i = 0; i < frames * 2; ++i) samples[i] = static_cast<short>(samples[i] * gain);
++    return noErr;
++  }
++public:
++  ~IOSSoundStream() override {
++    if (unit) { AudioOutputUnitStop(unit); AudioUnitUninitialize(unit); AudioComponentInstanceDispose(unit); }
++  }
++  bool Init() override {
++    AudioComponentDescription description{};
++    description.componentType = kAudioUnitType_Output;
++    description.componentSubType = kAudioUnitSubType_RemoteIO;
++    description.componentManufacturer = kAudioUnitManufacturer_Apple;
++    auto component = AudioComponentFindNext(nullptr, &description);
++    if (!component || AudioComponentInstanceNew(component, &unit) != noErr) return false;
++    AudioStreamBasicDescription format{};
++    format.mSampleRate = 48000;
++    format.mFormatID = kAudioFormatLinearPCM;
++    format.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
++    format.mFramesPerPacket = 1;
++    format.mChannelsPerFrame = 2;
++    format.mBitsPerChannel = 16;
++    format.mBytesPerPacket = format.mBytesPerFrame = 4;
++    if (AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input,
++                             0, &format, sizeof(format)) != noErr) return false;
++    AURenderCallbackStruct callback{Render, this};
++    if (AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input,
++                             0, &callback, sizeof(callback)) != noErr) return false;
++    return AudioUnitInitialize(unit) == noErr;
++  }
++  bool SetRunning(bool running) override {
++    return unit && (running ? AudioOutputUnitStart(unit) : AudioOutputUnitStop(unit)) == noErr;
++  }
++  void SetVolume(int value) override { volume.store(std::clamp(value, 0, 100) / 100.0f); }
++};
++}
++std::unique_ptr<SoundStream> CreateIOSSoundStream() { return std::make_unique<IOSSoundStream>(); }
++}
+diff --git a/Source/Core/Common/CMakeLists.txt b/Source/Core/Common/CMakeLists.txt
+--- a/Source/Core/Common/CMakeLists.txt
++++ b/Source/Core/Common/CMakeLists.txt
+@@ -327,7 +327,7 @@
+   if(MSVC)
+     target_sources(common PRIVATE CompatPatches.cpp)
+   endif()
+-elseif(APPLE)
++elseif(APPLE AND NOT IOS)
+   target_sources(common PRIVATE
+     GL/GLInterface/AGL.h
+     GL/GLInterface/AGL.mm
+diff --git a/Source/Core/Common/FileUtil.cpp b/Source/Core/Common/FileUtil.cpp
+--- a/Source/Core/Common/FileUtil.cpp
++++ b/Source/Core/Common/FileUtil.cpp
+@@ -692,6 +692,7 @@
+   //
+   // The headers can be found under "Security" on opensource.apple.com:
+   // Security/OSX/libsecurity_translocate/lib/SecTranslocate.h
++#ifndef REFARE_IOS
+   if (!s_security_framework.IsOpen())
+   {
+     s_security_framework.Open("/System/Library/Frameworks/Security.framework/Security");
+@@ -709,6 +710,7 @@
+     bundle_ref = untranslocated_ref;
+   }
+ 
++#endif
+   char app_bundle_path[MAXPATHLEN];
+   CFStringRef bundle_path = CFURLCopyFileSystemPath(bundle_ref, kCFURLPOSIXPathStyle);
+   CFStringGetFileSystemRepresentation(bundle_path, app_bundle_path, sizeof(app_bundle_path));
+@@ -761,6 +763,8 @@
+ static std::string CreateSysDirectoryPath()
+ {
+ #if defined(_WIN32) || defined(LINUX_LOCAL_DEV)
++#define SYSDATA_DIR "Sys"
++#elif defined(REFARE_IOS)
+ #define SYSDATA_DIR "Sys"
+ #elif defined __APPLE__
+ #define SYSDATA_DIR "Contents/Resources/Sys"
+diff --git a/Source/Core/Common/GL/GLContext.cpp b/Source/Core/Common/GL/GLContext.cpp
+--- a/Source/Core/Common/GL/GLContext.cpp
++++ b/Source/Core/Common/GL/GLContext.cpp
+@@ -5,7 +5,7 @@
+ 
+ #include "Common/GL/GLContext.h"
+ 
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && !defined(REFARE_IOS)
+ #include "Common/GL/GLInterface/AGL.h"
+ #endif
+ #if defined(_WIN32)
+@@ -79,7 +79,7 @@
+                                              bool prefer_gles)
+ {
+   std::unique_ptr<GLContext> context;
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && !defined(REFARE_IOS)
+   if (wsi.type == WindowSystemType::MacOS || wsi.type == WindowSystemType::Headless)
+     context = std::make_unique<GLContextAGL>();
+ #endif
+diff --git a/Source/Core/Common/MemoryUtil.cpp b/Source/Core/Common/MemoryUtil.cpp
+--- a/Source/Core/Common/MemoryUtil.cpp
++++ b/Source/Core/Common/MemoryUtil.cpp
+@@ -16,7 +16,7 @@
+ #else
+ #include <stdio.h>
+ #include <sys/mman.h>
+-#if defined(_M_ARM_64) && defined(__APPLE__)
++#if defined(_M_ARM_64) && defined(__APPLE__) && !defined(REFARE_IOS)
+ #include <pthread.h>
+ #endif
+ #if defined __APPLE__ || defined __FreeBSD__ || defined __OpenBSD__ || defined __NetBSD__
+@@ -93,7 +93,7 @@
+ // Allows a thread to write to executable memory, but not execute the data.
+ void JITPageWriteEnableExecuteDisable()
+ {
+-#if defined(_M_ARM_64) && defined(__APPLE__)
++#if defined(_M_ARM_64) && defined(__APPLE__) && !defined(REFARE_IOS)
+   if (JITPageWriteNestCounter() == 0)
+   {
+     pthread_jit_write_protect_np(0);
+@@ -112,7 +112,7 @@
+   if (JITPageWriteNestCounter() < 0)
+     PanicAlertFmt("JITPageWriteNestCounter() underflowed");
+ 
+-#if defined(_M_ARM_64) && defined(__APPLE__)
++#if defined(_M_ARM_64) && defined(__APPLE__) && !defined(REFARE_IOS)
+   if (JITPageWriteNestCounter() == 0)
+   {
+     pthread_jit_write_protect_np(1);
+diff --git a/Source/Core/Common/WindowSystemInfo.h b/Source/Core/Common/WindowSystemInfo.h
+--- a/Source/Core/Common/WindowSystemInfo.h
++++ b/Source/Core/Common/WindowSystemInfo.h
+@@ -13,6 +13,7 @@
+   Wayland,
+   FBDev,
+   Haiku,
++  IOS,
+ };
+ 
+ struct WindowSystemInfo
+diff --git a/Source/Core/Core/CMakeLists.txt b/Source/Core/Core/CMakeLists.txt
+--- a/Source/Core/Core/CMakeLists.txt
++++ b/Source/Core/Core/CMakeLists.txt
+@@ -766,7 +766,7 @@
+   pugixml
+   sfml-network
+   videonull
+-  videoogl
++  $<$<NOT:$<BOOL:${IOS}>>:videoogl>
+   videosoftware
+ 
+ PRIVATE
+@@ -782,7 +782,7 @@
+   target_link_libraries(core PRIVATE ${LIBUDEV_LIBRARY})
+ endif()
+ 
+-if (APPLE)
++if (APPLE AND NOT IOS)
+   target_link_libraries(core
+   PRIVATE
+     ${CORESERV_LIBRARY}
+@@ -790,6 +790,8 @@
+     ${IOK_LIBRARY}
+     resolv
+   )
++elseif(IOS)
++  target_link_libraries(core PRIVATE resolv)
+ elseif (ANDROID)
+   target_link_libraries(core
+   PRIVATE
+@@ -857,7 +859,7 @@
+     target_link_libraries(core PUBLIC videod3d12 videod3d)
+   endif()
+   target_compile_definitions(core PRIVATE "-D_WINSOCK_DEPRECATED_NO_WARNINGS")
+-elseif(APPLE)
++elseif(APPLE AND NOT IOS)
+   target_sources(core PRIVATE
+     HW/EXI/BBA/TAP_Apple.cpp
+   )
+@@ -866,7 +868,7 @@
+   target_sources(core PRIVATE
+     HW/EXI/BBA/TAP_Unix.cpp
+   )
+-  if(ANDROID)
++  if(ANDROID AND NOT REFARE_ANDROID)
+     target_sources(core PRIVATE
+       HW/WiimoteReal/IOAndroid.cpp
+       HW/WiimoteReal/IOAndroid.h
+diff --git a/Source/Core/Core/Config/GraphicsSettings.cpp b/Source/Core/Core/Config/GraphicsSettings.cpp
+--- a/Source/Core/Core/Config/GraphicsSettings.cpp
++++ b/Source/Core/Core/Config/GraphicsSettings.cpp
+@@ -13,6 +13,7 @@
+ 
+ // Graphics.Hardware
+ 
++const Info<bool> GFX_METALFX_SPATIAL{{System::GFX, "Enhancements", "MetalFXSpatial"}, false};
+ const Info<bool> GFX_VSYNC{{System::GFX, "Hardware", "VSync"}, false};
+ const Info<int> GFX_ADAPTER{{System::GFX, "Hardware", "Adapter"}, 0};
+ 
+diff --git a/Source/Core/Core/Config/GraphicsSettings.h b/Source/Core/Core/Config/GraphicsSettings.h
+--- a/Source/Core/Core/Config/GraphicsSettings.h
++++ b/Source/Core/Core/Config/GraphicsSettings.h
+@@ -26,6 +26,7 @@
+ // Graphics.Hardware
+ 
+ extern const Info<bool> GFX_VSYNC;
++extern const Info<bool> GFX_METALFX_SPATIAL;
+ extern const Info<int> GFX_ADAPTER;
+ 
+ // Graphics.Settings
+diff --git a/Source/Core/Core/Core.cpp b/Source/Core/Core/Core.cpp
+--- a/Source/Core/Core/Core.cpp
++++ b/Source/Core/Core/Core.cpp
+@@ -299,7 +299,12 @@
+   system.GetPerfMetrics().Reset();
+ 
+   // The JIT need to be able to intercept faults, both for fastmem and for the BLR optimization.
++#ifdef REFARE_IOS
++  // Static native code and interpreter fallback do not need JIT fault handlers.
++  const bool exception_handler = false;
++#else
+   const bool exception_handler = EMM::IsExceptionHandlerSupported();
++#endif
+   if (exception_handler)
+     EMM::InstallExceptionHandler();
+ 
+diff --git a/Source/Core/Core/HW/WiimoteReal/IOAndroid.h b/Source/Core/Core/HW/WiimoteReal/IOAndroid.h
+--- a/Source/Core/Core/HW/WiimoteReal/IOAndroid.h
++++ b/Source/Core/Core/HW/WiimoteReal/IOAndroid.h
+@@ -3,7 +3,7 @@
+ 
+ #pragma once
+ 
+-#ifdef ANDROID
++#if defined(ANDROID) && !defined(REFARE_ANDROID)
+ #include <jni.h>
+ #include <string>
+ 
+diff --git a/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp b/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp
+--- a/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp
++++ b/Source/Core/Core/PowerPC/StaticRecomp/StaticRecompCore.cpp
+@@ -185,9 +185,9 @@
+   m_lockstep_verifier = std::make_unique<StaticRecompLockstep::StaticRecompLockstepVerifier>(*this);
+   m_lockstep_verifier->Init();
+ 
+-#ifdef _M_ARM_64
++#if defined(_M_ARM_64) && !defined(REFARE_IOS) && !defined(REFARE_ANDROID)
+   m_fallback_jit = std::make_unique<JitArm64>(m_system);
+-#elif defined(_M_X86_64)
++#elif defined(_M_X86_64) && !defined(REFARE_IOS) && !defined(REFARE_ANDROID)
+   m_fallback_jit = std::make_unique<Jit64>(m_system);
+ #endif
+   if (m_fallback_jit)
+diff --git a/Source/Core/InputCommon/CMakeLists.txt b/Source/Core/InputCommon/CMakeLists.txt
+--- a/Source/Core/InputCommon/CMakeLists.txt
++++ b/Source/Core/InputCommon/CMakeLists.txt
+@@ -113,7 +113,7 @@
+     )
+   endif()
+   target_link_libraries(inputcommon PRIVATE cfgmgr32.lib dinput8.lib dxguid.lib)
+-elseif(APPLE)
++elseif(APPLE AND NOT IOS)
+   target_sources(inputcommon PRIVATE
+     ControllerInterface/Quartz/Quartz.h
+     ControllerInterface/Quartz/Quartz.mm
+@@ -136,7 +136,7 @@
+     ControllerInterface/Xlib/XInput2.h
+   )
+   target_link_libraries(inputcommon PRIVATE PkgConfig::X11_INPUT)
+-elseif(ANDROID)
++elseif(ANDROID AND NOT REFARE_ANDROID)
+   target_compile_definitions(inputcommon PRIVATE -DCIFACE_USE_ANDROID)
+   target_sources(inputcommon PRIVATE
+     ControllerInterface/Android/Android.cpp
+@@ -149,7 +149,7 @@
+   )
+ endif()
+ 
+-if(NOT ANDROID)
++if(TARGET LibUSB::LibUSB)
+   target_link_libraries(inputcommon PUBLIC LibUSB::LibUSB)
+ endif()
+ 
+diff --git a/Source/Core/InputCommon/ControllerInterface/ControllerInterface.h b/Source/Core/InputCommon/ControllerInterface/ControllerInterface.h
+--- a/Source/Core/InputCommon/ControllerInterface/ControllerInterface.h
++++ b/Source/Core/InputCommon/ControllerInterface/ControllerInterface.h
+@@ -22,7 +22,7 @@
+ #ifdef HAVE_X11
+ #define CIFACE_USE_XLIB
+ #endif
+-#if defined(__APPLE__)
++#if defined(__APPLE__) && !defined(REFARE_IOS)
+ #define CIFACE_USE_OSX
+ #endif
+ #if defined(HAVE_LIBEVDEV) && defined(HAVE_LIBUDEV)
+diff --git a/Source/Core/InputCommon/GCAdapter.cpp b/Source/Core/InputCommon/GCAdapter.cpp
+--- a/Source/Core/InputCommon/GCAdapter.cpp
++++ b/Source/Core/InputCommon/GCAdapter.cpp
+@@ -3,7 +3,10 @@
+ 
+ #include "InputCommon/GCAdapter.h"
+ 
+-#ifndef ANDROID
++#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
++#define GCADAPTER_USE_LIBUSB_IMPLEMENTATION false
++#define GCADAPTER_USE_ANDROID_IMPLEMENTATION false
++#elif !defined(ANDROID)
+ #define GCADAPTER_USE_LIBUSB_IMPLEMENTATION true
+ #define GCADAPTER_USE_ANDROID_IMPLEMENTATION false
+ #else
+diff --git a/Source/Core/UICommon/UICommon.cpp b/Source/Core/UICommon/UICommon.cpp
+--- a/Source/Core/UICommon/UICommon.cpp
++++ b/Source/Core/UICommon/UICommon.cpp
+@@ -55,7 +55,7 @@
+ #include "UICommon/DBusUtils.h"
+ #endif
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(REFARE_IOS)
+ #include <IOKit/pwr_mgt/IOPMLib.h>
+ #endif
+ 
+@@ -517,7 +517,7 @@
+                           (inhibit ? (ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED) : 0));
+ #endif
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && !defined(REFARE_IOS)
+   static IOPMAssertionID s_power_assertion = kIOPMNullAssertionID;
+   if (inhibit)
+   {
+diff --git a/Source/Core/VideoBackends/CMakeLists.txt b/Source/Core/VideoBackends/CMakeLists.txt
+--- a/Source/Core/VideoBackends/CMakeLists.txt
++++ b/Source/Core/VideoBackends/CMakeLists.txt
+@@ -1,4 +1,6 @@
+-add_subdirectory(OGL)
++if(NOT IOS)
++  add_subdirectory(OGL)
++endif()
+ add_subdirectory(Null)
+ add_subdirectory(Software)
+ 
+diff --git a/Source/Core/VideoBackends/Metal/CMakeLists.txt b/Source/Core/VideoBackends/Metal/CMakeLists.txt
+--- a/Source/Core/VideoBackends/Metal/CMakeLists.txt
++++ b/Source/Core/VideoBackends/Metal/CMakeLists.txt
+@@ -41,3 +41,8 @@
+ )
+ 
+ target_compile_options(videometal PRIVATE -fno-objc-arc)
++
++if(APPLE)
++  target_sources(videometal PRIVATE MTLFXScaler.mm MTLSpatialUpscaler.mm)
++  target_link_libraries(videometal PRIVATE "$<LINK_LIBRARY:WEAK_FRAMEWORK,MetalFX>")
++endif()
+diff --git a/Source/Core/VideoBackends/Metal/MTLFXScaler.h b/Source/Core/VideoBackends/Metal/MTLFXScaler.h
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/VideoBackends/Metal/MTLFXScaler.h
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++#include <Metal/Metal.h>
++#include <memory>
++namespace Metal {
++// Render-thread-only owner. Encodes crop + spatial upscale on the caller's
++// command buffer, preserving ordering with game drawing and presentation.
++class FXSpatialScaler {
++public:
++  FXSpatialScaler();
++  ~FXSpatialScaler();
++  static bool Supported(id<MTLDevice> device);
++  id<MTLTexture> Encode(id<MTLDevice> device, id<MTLCommandBuffer> command,
++                       id<MTLTexture> source, unsigned x, unsigned y,
++                       unsigned width, unsigned height, unsigned output_width,
++                       unsigned output_height);
++  void Reset();
++private:
++  struct Impl;
++  std::unique_ptr<Impl> m_impl;
++};
++}
+diff --git a/Source/Core/VideoBackends/Metal/MTLFXScaler.mm b/Source/Core/VideoBackends/Metal/MTLFXScaler.mm
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/VideoBackends/Metal/MTLFXScaler.mm
+@@ -0,0 +1,78 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#include "MTLFXScaler.h"
++#include "MRCHelpers.h"
++#import <MetalFX/MetalFX.h>
++namespace Metal {
++struct FXSpatialScaler::Impl {
++  MRCOwned<id> scaler;
++  MRCOwned<id<MTLTexture>> input, output, array_view;
++  id<MTLDevice> device = nil;
++  unsigned width = 0, height = 0, out_width = 0, out_height = 0;
++  MTLPixelFormat format = MTLPixelFormatInvalid;
++};
++FXSpatialScaler::FXSpatialScaler() : m_impl(std::make_unique<Impl>()) {}
++FXSpatialScaler::~FXSpatialScaler() = default;
++void FXSpatialScaler::Reset() { m_impl = std::make_unique<Impl>(); }
++bool FXSpatialScaler::Supported(id<MTLDevice> device) {
++  if (@available(iOS 16.0, macOS 13.0, *))
++    return device && [MTLFXSpatialScalerDescriptor supportsDevice:device];
++  return false;
++}
++id<MTLTexture> FXSpatialScaler::Encode(id<MTLDevice> device, id<MTLCommandBuffer> command,
++                                     id<MTLTexture> source, unsigned x, unsigned y,
++                                     unsigned width, unsigned height,
++                                     unsigned output_width, unsigned output_height) {
++  if (!Supported(device) || !command || !source || !width || !height ||
++      !output_width || !output_height || x > source.width || y > source.height ||
++      width > source.width-x || height > source.height-y || source.sampleCount != 1 ||
++      output_width < width || output_height < height) return nil;
++  if (@available(iOS 16.0, macOS 13.0, *)) {
++    auto& state = *m_impl;
++    const auto format = source.pixelFormat;
++    if (!state.scaler || state.device != device || state.width != width || state.height != height ||
++        state.out_width != output_width || state.out_height != output_height || state.format != format) {
++      Reset();
++      auto descriptor = MRCTransfer([MTLFXSpatialScalerDescriptor new]);
++      descriptor.Get().inputWidth = width; descriptor.Get().inputHeight = height;
++      descriptor.Get().outputWidth = output_width; descriptor.Get().outputHeight = output_height;
++      descriptor.Get().colorTextureFormat = format; descriptor.Get().outputTextureFormat = format;
++      descriptor.Get().colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
++      auto scaler = MRCTransfer([descriptor newSpatialScalerWithDevice:device]);
++      if (!scaler) return nil;
++      auto texture = MRCTransfer([MTLTextureDescriptor new]);
++      texture.Get().textureType = MTLTextureType2D;
++      texture.Get().pixelFormat = format;
++      texture.Get().storageMode = MTLStorageModePrivate;
++      texture.Get().width = width; texture.Get().height = height;
++      texture.Get().usage = scaler.Get().colorTextureUsage | MTLTextureUsageShaderRead;
++      auto input = MRCTransfer([device newTextureWithDescriptor:texture]);
++      texture.Get().width = output_width; texture.Get().height = output_height;
++      texture.Get().usage = scaler.Get().outputTextureUsage | MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
++      auto output = MRCTransfer([device newTextureWithDescriptor:texture]);
++      if (!input || !output) return nil;
++      auto view = MRCTransfer([output newTextureViewWithPixelFormat:format
++          textureType:MTLTextureType2DArray levels:NSMakeRange(0,1) slices:NSMakeRange(0,1)]);
++      if (!view) return nil;
++      input.Get().label = @"ReFare MetalFX cropped input";
++      output.Get().label = @"ReFare MetalFX spatial output";
++      m_impl->scaler = MRCRetain((id)scaler.Get());
++      m_impl->input = std::move(input); m_impl->output = std::move(output);
++      m_impl->array_view = std::move(view); m_impl->device = device;
++      m_impl->width = width; m_impl->height = height;
++      m_impl->out_width = output_width; m_impl->out_height = output_height; m_impl->format = format;
++    }
++    auto blit = [command blitCommandEncoder];
++    if (!blit) return nil;
++    [blit copyFromTexture:source sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x,y,0)
++               sourceSize:MTLSizeMake(width,height,1) toTexture:m_impl->input
++         destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
++    [blit endEncoding];
++    id<MTLFXSpatialScaler> scaler = m_impl->scaler.Get();
++    scaler.colorTexture = m_impl->input; scaler.outputTexture = m_impl->output;
++    scaler.inputContentWidth = width; scaler.inputContentHeight = height;
++    [scaler encodeToCommandBuffer:command];
++    return m_impl->array_view;
++  }
++  return nil;
++}
++}
+diff --git a/Source/Core/VideoBackends/Metal/MTLGfx.mm b/Source/Core/VideoBackends/Metal/MTLGfx.mm
+--- a/Source/Core/VideoBackends/Metal/MTLGfx.mm
++++ b/Source/Core/VideoBackends/Metal/MTLGfx.mm
+@@ -24,7 +24,9 @@
+ Metal::Gfx::Gfx(MRCOwned<CAMetalLayer*> layer) : m_layer(std::move(layer))
+ {
+   UpdateActiveConfig();
++#if TARGET_OS_OSX
+   [m_layer setDisplaySyncEnabled:g_ActiveConfig.bVSyncActive];
++#endif
+ 
+   SetupSurface();
+   g_state_tracker->FlushEncoders();
+@@ -291,8 +293,10 @@
+ {
+   AbstractGfx::OnConfigChanged(bits);
+ 
++#if TARGET_OS_OSX
+   if (bits & CONFIG_CHANGE_BIT_VSYNC)
+     [m_layer setDisplaySyncEnabled:g_ActiveConfig.bVSyncActive];
++#endif
+ 
+   if (bits & CONFIG_CHANGE_BIT_ANISOTROPY)
+   {
+diff --git a/Source/Core/VideoBackends/Metal/MTLMain.mm b/Source/Core/VideoBackends/Metal/MTLMain.mm
+--- a/Source/Core/VideoBackends/Metal/MTLMain.mm
++++ b/Source/Core/VideoBackends/Metal/MTLMain.mm
+@@ -2,6 +2,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "VideoBackends/Metal/VideoBackend.h"
++#ifdef __APPLE__
++#include "VideoCommon/RefareMetalFX.h"
++#endif
+ 
+ // This must be included before we use any TARGET_OS_* macros.
+ #include <TargetConditionals.h>
+@@ -59,6 +62,7 @@
+   switch (type)
+   {
+   case WindowSystemType::MacOS:
++  case WindowSystemType::IOS:
+   case WindowSystemType::Headless:
+     return true;
+   default:
+@@ -126,6 +130,9 @@
+       [layer setPixelFormat:MTLPixelFormatBGRA8Unorm];
+ 
+     ObjectCache::Initialize(std::move(adapter));
++#ifdef __APPLE__
++    RefareMetalFX::Initialize();
++#endif
+     g_state_tracker = std::make_unique<StateTracker>();
+ 
+     return InitializeShared(
+@@ -138,6 +145,9 @@
+ {
+   ShutdownShared();
+ 
++#ifdef __APPLE__
++  RefareMetalFX::Shutdown();
++#endif
+   g_state_tracker.reset();
+   ObjectCache::Shutdown();
+ }
+diff --git a/Source/Core/VideoBackends/Metal/MTLSpatialUpscaler.mm b/Source/Core/VideoBackends/Metal/MTLSpatialUpscaler.mm
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/VideoBackends/Metal/MTLSpatialUpscaler.mm
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#include "VideoCommon/RefareMetalFX.h"
++#include "VideoBackends/Metal/MTLFXScaler.h"
++#include "VideoBackends/Metal/MTLTexture.h"
++#include "VideoBackends/Metal/MTLObjectCache.h"
++#include "VideoBackends/Metal/MTLStateTracker.h"
++#include "Common/Config/Config.h"
++#include "Core/Config/GraphicsSettings.h"
++#include <atomic>
++#include <cstdio>
++namespace RefareMetalFX {
++namespace {
++std::atomic<Support> support{Support::NotReady};
++std::unique_ptr<Metal::FXSpatialScaler> scaler;
++std::unique_ptr<Metal::Texture> result;
++}
++Support GetSupport() { return support.load(); }
++void Initialize() {
++  result.reset(); scaler.reset();
++  support = Metal::FXSpatialScaler::Supported(Metal::g_device) ? Support::Available : Support::Unavailable;
++  std::fprintf(stderr,"[MetalFX] spatial upscaling %s\n",GetSupport() == Support::Available ? "available" : "unavailable on this OS/GPU");
++}
++void Shutdown() { result.reset(); scaler.reset(); support = Support::NotReady; }
++const AbstractTexture* Upscale(const AbstractTexture* source, const MathUtil::Rectangle<int>& region,
++                              unsigned width, unsigned height) {
++  if (!Config::Get(Config::GFX_METALFX_SPATIAL)) { result.reset(); scaler.reset(); return nullptr; }
++  if (GetSupport() != Support::Available || !source || source->GetLayers() != 1 ||
++      region.left < 0 || region.top < 0 || region.GetWidth() <= 0 || region.GetHeight() <= 0 ||
++      width < static_cast<unsigned>(region.GetWidth()) || height < static_cast<unsigned>(region.GetHeight()) ||
++      (width == static_cast<unsigned>(region.GetWidth()) && height == static_cast<unsigned>(region.GetHeight()))) return nullptr;
++  const auto* texture = static_cast<const Metal::Texture*>(source);
++  if (!scaler) scaler = std::make_unique<Metal::FXSpatialScaler>();
++  Metal::g_state_tracker->EndRenderPass();
++  auto output = scaler->Encode(Metal::g_device, Metal::g_state_tracker->GetRenderCmdBuf(), texture->GetMTLTexture(),
++                              region.left, region.top, region.GetWidth(), region.GetHeight(), width, height);
++  if (!output) {
++    support = Support::Failed;
++    result.reset(); scaler.reset();
++    std::fprintf(stderr,"[MetalFX] scaler initialization failed; using normal presentation\n");
++    return nullptr;
++  }
++  if (!result || result->GetMTLTexture() != output) {
++    TextureConfig config(width,height,1,1,1,source->GetFormat(),0,AbstractTextureType::Texture_2DArray);
++    result = std::make_unique<Metal::Texture>(MRCRetain(output),config);
++  }
++  return result.get();
++}
++}
+diff --git a/Source/Core/VideoBackends/Metal/MTLUtil.h b/Source/Core/VideoBackends/Metal/MTLUtil.h
+--- a/Source/Core/VideoBackends/Metal/MTLUtil.h
++++ b/Source/Core/VideoBackends/Metal/MTLUtil.h
+@@ -3,7 +3,10 @@
+ 
+ #pragma once
+ 
++#include <TargetConditionals.h>
++#if TARGET_OS_OSX
+ #include <AppKit/NSScreen.h>
++#endif
+ #include <Metal/Metal.h>
+ 
+ #include <vector>
+diff --git a/Source/Core/VideoBackends/Metal/MTLUtil.mm b/Source/Core/VideoBackends/Metal/MTLUtil.mm
+--- a/Source/Core/VideoBackends/Metal/MTLUtil.mm
++++ b/Source/Core/VideoBackends/Metal/MTLUtil.mm
+@@ -76,10 +76,14 @@
+   backend_info->bSupportsSettingObjectNames = true;
+   // Metal requires multisample resolve to be done on a render pass
+   backend_info->bSupportsPartialMultisampleResolve = false;
+-  backend_info->bSupportsDynamicVertexLoader = true;
++  backend_info->bSupportsDynamicVertexLoader = !TARGET_OS_IOS;
+   backend_info->bSupportsVSLinePointExpand = true;
++#if TARGET_OS_OSX
+   backend_info->bSupportsHDROutput =
+       1.0 < [[NSScreen deepestScreen] maximumPotentialExtendedDynamicRangeColorComponentValue];
++#else
++  backend_info->bSupportsHDROutput = false;
++#endif
+ }
+ 
+ void Metal::Util::PopulateBackendInfoAdapters(BackendInfo* backend_info,
+diff --git a/Source/Core/VideoCommon/Present.cpp b/Source/Core/VideoCommon/Present.cpp
+--- a/Source/Core/VideoCommon/Present.cpp
++++ b/Source/Core/VideoCommon/Present.cpp
+@@ -2,6 +2,9 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ #include "VideoCommon/Present.h"
++#ifdef __APPLE__
++#include "VideoCommon/RefareMetalFX.h"
++#endif
+ 
+ #include "Common/ChunkFile.h"
+ #include "Core/Config/GraphicsSettings.h"
+@@ -930,6 +933,17 @@
+                                   const AbstractTexture* source_texture,
+                                   const MathUtil::Rectangle<int>& source_rc)
+ {
++#ifdef __APPLE__
++  if (g_backend_info.api_type == APIType::Metal && g_ActiveConfig.stereo_mode == StereoMode::Off) {
++    const auto width = target_rc.GetWidth(), height = target_rc.GetHeight();
++    if (width > 0 && height > 0) {
++      if (const auto* upscaled = RefareMetalFX::Upscale(source_texture, source_rc, width, height)) {
++        m_post_processor->BlitFromTexture(target_rc, {0,0,width,height}, upscaled);
++        return;
++      }
++    }
++  }
++#endif
+   if (g_ActiveConfig.stereo_mode == StereoMode::QuadBuffer &&
+       g_backend_info.bUsesExplictQuadBuffering)
+   {
+diff --git a/Source/Core/VideoCommon/RefareMetalFX.h b/Source/Core/VideoCommon/RefareMetalFX.h
+new file mode 100644
+--- /dev/null
++++ b/Source/Core/VideoCommon/RefareMetalFX.h
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++#include "Common/MathUtil.h"
++class AbstractTexture;
++namespace RefareMetalFX {
++enum class Support { NotReady, Unavailable, Available, Failed };
++Support GetSupport();
++void Initialize();
++void Shutdown();
++const AbstractTexture* Upscale(const AbstractTexture* source, const MathUtil::Rectangle<int>& region,
++                              unsigned width, unsigned height);
++}
+diff --git a/Source/Core/VideoCommon/VertexLoaderBase.cpp b/Source/Core/VideoCommon/VertexLoaderBase.cpp
+--- a/Source/Core/VideoCommon/VertexLoaderBase.cpp
++++ b/Source/Core/VideoCommon/VertexLoaderBase.cpp
+@@ -235,6 +235,10 @@
+ std::unique_ptr<VertexLoaderBase> VertexLoaderBase::CreateVertexLoader(const TVtxDesc& vtx_desc,
+                                                                        const VAT& vtx_attr)
+ {
++#if defined(REFARE_IOS) || defined(REFARE_ANDROID)
++  // CPU vertex conversion must not allocate executable pages on sideloaded iOS.
++  return std::make_unique<VertexLoader>(vtx_desc, vtx_attr);
++#endif
+   const VertexLoaderType loader_type = g_ActiveConfig.vertex_loader_type;
+ 
+   if (loader_type == VertexLoaderType::Software)

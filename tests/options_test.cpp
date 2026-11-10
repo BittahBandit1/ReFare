@@ -122,6 +122,9 @@ int main(int argc, char** argv) {
     tap(refare::Right);
     Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER).empty(),"FXAA did not turn off");
     tap(refare::Right);
+#ifdef __APPLE__
+    tap(refare::Down);  // MetalFX spatial upscaling (tested separately with GPU capability).
+#endif
     // Interpolation: Off -> Match display -> 90/120/144/180 FPS, wrapping.
     tap(refare::Down);
     Check(!Config::Get(Config::GFX_REFARE_FRAME_INTERPOLATION),"Interpolation was not off by default");
@@ -149,7 +152,7 @@ int main(int argc, char** argv) {
     tap(refare::Down); tap(refare::Right);
     Check(!refare::LoadMetalHUDPreference(directory),"Metal HUD Off was not saved");
     tap(refare::Back); tap(refare::Toggle);
-    tap(refare::Up); tap(refare::Up); // Wrap from scale past Exit to Metal HUD.
+    tap(refare::Up); tap(refare::Up); tap(refare::Up); // Past Exit and Menu button to Metal HUD.
     tap(refare::Left);
     Check(refare::LoadMetalHUDPreference(directory),"Metal HUD On was not saved after reopening");
     tap(refare::Right);
@@ -247,6 +250,11 @@ int main(int argc, char** argv) {
     Check(!refare::SaveMenuButtonBinding(directory,{"Pad N","Escape"}) ||
           (refare::LoadMenuButtonBinding(directory).pad=="Shoulder L" &&
            refare::LoadMenuButtonBinding(directory).key=="Tab"),"Menu navigation accepted as the menu button");
+    refare::SaveMenuButtonBinding(directory,{"Shoulder L","RETURN"});
+    Check(refare::LoadMenuButtonBinding(directory).key=="Tab","DirectInput Enter accepted as menu binding");
+    refare::SaveMenuButtonBinding(directory,{"Shoulder L","UP"});
+    Check(refare::LoadMenuButtonBinding(directory).key=="Tab","DirectInput navigation accepted as menu binding");
+    refare::SaveMenuButtonBinding(directory,{});
     tap(refare::Toggle);
   }
   ImGui::DestroyContext(); Config::Shutdown();

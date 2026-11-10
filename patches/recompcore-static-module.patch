@@ -1,0 +1,22 @@
+diff --git a/module-template/CMakeLists.txt b/module-template/CMakeLists.txt
+index d6ff986..e402f2d 100644
+--- a/module-template/CMakeLists.txt
++++ b/module-template/CMakeLists.txt
+@@ -85,7 +85,16 @@ if(NOT CHUNK_INPUTS)
+   message(FATAL_ERROR "DolRecomp output has no generated chunks in ${GENERATED_DIR}/chunks")
+ endif()
+ 
+-add_library(${MODULE_NAME} SHARED
++option(RECOMPCORE_MODULE_STATIC "Link the generated module into a signed application" OFF)
++if(RECOMPCORE_MODULE_STATIC)
++  set(RECOMPCORE_MODULE_LIBRARY_TYPE STATIC)
++else()
++  set(RECOMPCORE_MODULE_LIBRARY_TYPE SHARED)
++endif()
++if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT RECOMPCORE_MODULE_STATIC)
++  message(FATAL_ERROR "iOS modules must be linked into the signed app: set RECOMPCORE_MODULE_STATIC=ON")
++endif()
++add_library(${MODULE_NAME} ${RECOMPCORE_MODULE_LIBRARY_TYPE}
+   module_export.c
+   "${MODULE_TABLES}"
+   "${GXRUNTIME_DIR}/src/core/cpu.c"

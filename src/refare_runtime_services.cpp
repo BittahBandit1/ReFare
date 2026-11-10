@@ -126,7 +126,11 @@ bool WriteGamepadProfile(const std::filesystem::path& directory,
   static constexpr std::array<Binding,24> bindings={{{"Buttons/A","Button S","X"},
     {"Buttons/B","Button E","Z"},{"Buttons/X","Button W","C"},
     {"Buttons/Y","Button N","S"},{"Buttons/Z","Shoulder R","D"},
+#ifdef _WIN32
+    {"Buttons/Start","Start","RETURN"},
+#else
     {"Buttons/Start","Start","Return"},
+#endif
 #ifdef __APPLE__
     {"Main Stick/Up","Left Y+","Up Arrow"},{"Main Stick/Down","Left Y-","Down Arrow"},
     {"Main Stick/Left","Left X-","Left Arrow"},{"Main Stick/Right","Left X+","Right Arrow"},
@@ -143,7 +147,13 @@ bool WriteGamepadProfile(const std::filesystem::path& directory,
     {"Triggers/L-Analog","Trigger L","Q"},{"Triggers/R-Analog","Trigger R","W"},
     {"D-Pad/Up","Pad N","T"},{"D-Pad/Down","Pad S","G"},
     {"D-Pad/Left","Pad W","F"},{"D-Pad/Right","Pad E","H"},
+#ifdef _WIN32
+    {"Main Stick/Modifier","","LSHIFT"},{"C-Stick/Modifier","","LCONTROL"}}};
+#elif defined(__linux__)
+    {"Main Stick/Modifier","","Shift_L"},{"C-Stick/Modifier","","Control_L"}}};
+#else
     {"Main Stick/Modifier","","Shift"},{"C-Stick/Modifier","","Ctrl"}}};
+#endif
   for (const auto& binding:bindings) {
     std::string expression;
     if (*binding.button) expression="`"+std::string(binding.button)+"`";

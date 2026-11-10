@@ -1,6 +1,7 @@
 #pragma once
 namespace refare {
 #ifdef __APPLE__
+bool MetalHUDSupported();
 void SetMetalHUDVisible(void* render_view, bool enabled);
 // Keep App Nap and timer throttling off while the game runs, including when
 // another app (Spotlight, a notification) takes focus.
@@ -14,6 +15,7 @@ double DisplayRefreshRate(void* render_view);
 // instead of reading every key's state). Any thread.
 double SecondsSinceKeyDown();
 #else
+inline bool MetalHUDSupported() { return false; }
 inline void SetMetalHUDVisible(void*, bool) {}
 inline void KeepGameResponsive() {}
 inline void PrioritizeCurrentThread() {}

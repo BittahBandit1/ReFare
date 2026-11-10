@@ -5,8 +5,10 @@ Crazy Taxi (GameCube) static recompilation project using
 [DolRecomp](https://github.com/ExpansionPak/DolRecomp), and
 [ModernGekko](https://github.com/ExpansionPak/ModernGekko).
 
-macOS ARM64 is the first target. Windows, Linux, Android and iOS are currently
-being researched. Thorough testing of arcade rounds has been done, and play at full
+macOS ARM64 is the first target. Windows x86-64, Linux x86-64/ARM64, iOS and Android ARM64
+port development is documented in [the port build guide](docs/PORTS.md).
+The Android controller-handheld test build is described in [Android testing](docs/ANDROID.md).
+The new platforms are not yet validated releases. Thorough testing of arcade rounds has been done, and play at full
 speed on an M3 Pro MacBook Pro with GPU headroom to spare. Testing has not 
 been done on lower end hardware at this time. 
 (see [docs/120FPS.md](docs/120FPS.md)). See [project status](docs/STATUS.md).
@@ -92,6 +94,11 @@ that gameplay, graphics, sound, or controllers work correctly.
 
 ## Portability
 
+Windows and Linux now have a native pre-game GUI with file selection,
+drag-and-drop disc import, preparation progress, logs and Play. Build and open
+it with `python scripts/ports.py launcher` (`python3` on Linux).
+See [the desktop launcher guide](docs/DESKTOP-LAUNCHER.md) for details.
+
 On macOS the Makefile defaults to `CMAKE_OSX_ARCHITECTURES=arm64`. This flag is
 omitted on other systems. `CMAKE_PLATFORM_ARGS` can override it. Local CMake
 quoting patches are applied automatically by `make` (see `patches/`). GameCube
@@ -135,7 +142,7 @@ at the title screen and during play; no game-state addresses are assumed.
 Both buttons can be changed from the menu itself (see **Options menu button** below).
 
 - D-pad up/down selects resolution scale, aspect ratio, HUD and menus
-  (Centered/Stretched), FXAA, Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS),
+  (Centered/Stretched), FXAA, MetalFX spatial upscaling (supported Apple devices), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS),
   options menu button, or Exit The Game.
 - D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
 - **Options menu button**: press Cross/Enter (or click Change), then press the
@@ -256,3 +263,7 @@ licensed under the SIL Open Font License 1.1.
 ReFare is an unofficial fan project. It is not affiliated with or endorsed by
 SEGA or Nintendo. Crazy Taxi is a trademark of SEGA. No disc image, extracted
 game data or copyrighted game assets are included in this repository.
+
+MetalFX spatial upscaling is available in the macOS L1/Tab menu with the Metal
+backend on macOS 13+ and supported GPUs. It defaults to Off; choose a lower
+resolution scale than the window resolution to use the upscaler.

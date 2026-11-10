@@ -8,6 +8,7 @@
 #include <atomic>
 
 namespace refare {
+bool MetalHUDSupported() { if (@available(macOS 13.0, *)) return true; return false; }
 void SetMetalHUDVisible(void* render_view, bool enabled) {
   if (!render_view) return;
   // The runtime's macOS render window is an NSView. Access its layer on the
