@@ -38,6 +38,9 @@ int main(int argc,char** argv) { try {
   Common::IniFile settings;settings.Load((directory/"Config/GFX.ini").string());bool saved=false;
   settings.GetOrCreateSection("Enhancements")->Get("MetalFXSpatial",&saved,false);
   Check(saved,"MetalFX preference not saved");
+  tap(refare::Right);tap(refare::Right); // 75%, then 50%
+  {Common::IniFile refare_ini;refare_ini.Load((directory/"Config/ReFare.ini").string());int scale=0;
+   refare_ini.GetOrCreateSection("Video")->Get("MetalFXScale",&scale,0);Check(scale==50,"MetalFX 50% render scale not saved");}
   tap(refare::Right);Check(!Config::Get(Config::GFX_METALFX_SPATIAL),"Menu did not disable MetalFX");
   settings.Load((directory/"Config/GFX.ini").string());
   settings.GetOrCreateSection("Enhancements")->Get("MetalFXSpatial",&saved,true);
@@ -51,6 +54,6 @@ int main(int argc,char** argv) { try {
   tap(refare::Toggle);frame();Check(!refare::OptionsMenuBlocksInput(),"Closing menu retained input block");
  }
  ImGui::DestroyContext();Config::Shutdown();
- std::cout<<"PASS: iOS menu opens, toggles MetalFX live, saves On/Off, rejects unsupported hardware and releases input\n";
+ std::cout<<"PASS: iOS menu opens, cycles MetalFX Off/100/75/50% live, saves it, rejects unsupported hardware and releases input\n";
  return 0;
  }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

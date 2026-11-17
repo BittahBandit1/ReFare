@@ -13,12 +13,14 @@
 #include "imgui.h"
 #ifdef __APPLE__
 #include "VideoCommon/RefareMetalFX.h"
+#include "VideoCommon/Present.h"
 #endif
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
 #include <optional>
+#include <cmath>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -215,6 +217,10 @@ struct OptionsMenu::Impl {
   Common::EventHook present_hook;
   perf::FrameIntervals intervals;
   int perf_overlay = 0;
+  // MetalFX render scale (% of the game area's height): 100 is anti-aliasing,
+  // 75 and 50 render less and upscale. Saved in Config/ReFare.ini.
+  int metalfx_scale = 100;
+  int auto_efb_scale = 0;  // render scale picked for MetalFX (0 = user's)
   FramePacingRecorder pacing_recorder;
   std::function<OptionsInput()> input_source;
   std::function<void()> request_exit;
@@ -253,6 +259,8 @@ struct OptionsMenu::Impl {
     frontend.Load((directory / "Config" / "ReFare.ini").string());
     frontend.GetOrCreateSection("Video")->Get("FPSCounter", &perf_overlay, 0);
     perf_overlay = std::clamp(perf_overlay, 0, 2);
+    frontend.GetOrCreateSection("Video")->Get("MetalFXScale", &metalfx_scale, 100);
+    if (metalfx_scale != 75 && metalfx_scale != 50) metalfx_scale = 100;
     ReadSettings();
     present_hook = GetVideoEvents().after_present_event.Register(
         [this](const PresentInfo& info) { intervals.Record(info); });
@@ -276,7 +284,7 @@ struct OptionsMenu::Impl {
         if (kInterpChoices[i].target == target) interp_index = i;
     }
     vsync = Config::Get(Config::GFX_VSYNC);
-    const int scale = Config::Get(Config::GFX_EFB_SCALE);
+    const int scale = Config::GetBase(Config::GFX_EFB_SCALE);  // MetalFX may override the current value
     scale_index = 0;
     for (int i=0; i<static_cast<int>(scales.size()); ++i)
       if (scales[i].value == scale) scale_index = i;
@@ -301,7 +309,8 @@ struct OptionsMenu::Impl {
     save_error = (!ec && graphics.Save(file)) ? "" : "Could not save video settings; change applies this session.";
   }
   void ApplyScale() {
-    Config::SetBaseOrCurrent(Config::GFX_EFB_SCALE, scales[scale_index].value);
+    Config::SetBase(Config::GFX_EFB_SCALE, scales[scale_index].value);
+    if (!auto_efb_scale) Config::SetCurrent(Config::GFX_EFB_SCALE, scales[scale_index].value);
 #if !defined(REFARE_IOS) && !defined(REFARE_ANDROID)
     // The desktop frontend applies this setting at boot; keep it in sync with GFX.ini.
     Common::IniFile frontend;
@@ -313,6 +322,57 @@ struct OptionsMenu::Impl {
     SaveGraphics([&](Common::IniFile& ini) {
       ini.GetOrCreateSection("Settings")->Set("InternalResolution", scales[scale_index].value);
     });
+  }
+  // MetalFX state: 0 off, 1 = 100%, 2 = 75%, 3 = 50%.
+  static constexpr std::array<int, 4> kMetalFXScales = {0, 100, 75, 50};
+  bool MetalFXOn() const {
+#ifdef __APPLE__
+    return Config::Get(Config::GFX_METALFX_SPATIAL);
+#else
+    return false;
+#endif
+  }
+  int MetalFXState() const {
+    if (!MetalFXOn()) return 0;
+    return metalfx_scale == 75 ? 2 : metalfx_scale == 50 ? 3 : 1;
+  }
+  void SetMetalFXState(int state) {
+#ifdef __APPLE__
+    state = std::clamp(state, 0, 3);
+    const bool enabled = state != 0;
+    if (enabled && !MetalFXAvailable()) return;
+    if (enabled) metalfx_scale = kMetalFXScales[state];
+    Config::SetBaseOrCurrent(Config::GFX_METALFX_SPATIAL, enabled);
+    SaveGraphics([&](Common::IniFile& ini) { ini.GetOrCreateSection("Enhancements")->Set("MetalFXSpatial", enabled); });
+    Common::IniFile ini;
+    const auto file = (directory / "Config" / "ReFare.ini").string();
+    ini.Load(file);
+    ini.GetOrCreateSection("Video")->Set("MetalFXScale", metalfx_scale);
+    std::error_code ec;
+    std::filesystem::create_directories(directory / "Config", ec);
+    if (ec || !ini.Save(file)) save_error = "Could not save the MetalFX render scale.";
+    UpdateMetalFXScale();
+#else
+    (void)state;
+#endif
+  }
+  // While MetalFX is on, render at the whole-number scale closest to the
+  // chosen percentage of the game area's height (never above it, so MetalFX
+  // always has something to upscale), without touching the saved Resolution.
+  // Off: back to the player's Resolution.
+  void UpdateMetalFXScale() {
+    constexpr int kXfbLines = 480;
+    int wanted = 0;
+    if (MetalFXOn() && g_presenter) {
+      const int height = g_presenter->GetTargetRectangle().GetHeight();
+      if (height > 0) {
+        const int closest = static_cast<int>(std::lround(height * (metalfx_scale / 100.0) / kXfbLines));
+        wanted = std::clamp(std::min(closest, height / kXfbLines), 1, scales.back().value);
+      }
+    }
+    if (wanted == auto_efb_scale) return;
+    auto_efb_scale = wanted;
+    Config::SetCurrent(Config::GFX_EFB_SCALE, wanted ? wanted : scales[scale_index].value);
   }
   void ApplyAspect() {
     const auto& aspect = aspects[aspect_index];
@@ -400,6 +460,7 @@ struct OptionsMenu::Impl {
   void Step(int delta) {
     switch (CurrentRow()) {
     case Row::Scale:
+      if (auto_efb_scale) break;  // MetalFX picks the render scale
       scale_index = std::clamp(scale_index + delta, 0, static_cast<int>(scales.size())-1);
       ApplyScale(); break;
     case Row::Aspect: {
@@ -409,14 +470,8 @@ struct OptionsMenu::Impl {
     }
     case Row::HudLayout: center_hud = !center_hud; ApplyHudLayout(); break;
     case Row::FXAA: fxaa = !fxaa; ApplyFXAA(); break;
-    case Row::MetalFX:
-#ifdef __APPLE__
-      if (Config::Get(Config::GFX_METALFX_SPATIAL) || RefareMetalFX::GetSupport() == RefareMetalFX::Support::Available) {
-        const bool enabled = !Config::Get(Config::GFX_METALFX_SPATIAL);
-        Config::SetBaseOrCurrent(Config::GFX_METALFX_SPATIAL, enabled);
-        SaveGraphics([&](Common::IniFile& ini) { ini.GetOrCreateSection("Enhancements")->Set("MetalFXSpatial",enabled); });
-      }
-#endif
+    case Row::MetalFX:  // Off, 100%, 75%, 50%
+      if (MetalFXAvailable()) SetMetalFXState((MetalFXState() + delta + 4) % 4);
       break;
     case Row::Interpolation: {
       const int count = static_cast<int>(kInterpChoices.size());
@@ -460,7 +515,10 @@ struct OptionsMenu::Impl {
   }
   const char* RowValue(Row row) const {
     switch (row) {
-    case Row::Scale: return scales[scale_index].label;
+    case Row::Scale:
+      if (!auto_efb_scale) return scales[scale_index].label;
+      value_text = "Auto for MetalFX (" + std::to_string(auto_efb_scale) + "x)";
+      return value_text.c_str();
     case Row::Aspect: return aspects[aspect_index].label;
     case Row::HudLayout: return center_hud ? "Centered (4:3)" : "Stretched";
     case Row::FXAA: return fxaa ? "On" : "Off";
@@ -470,7 +528,10 @@ struct OptionsMenu::Impl {
       case RefareMetalFX::Support::NotReady: return "Waiting for renderer";
       case RefareMetalFX::Support::Unavailable: return "Unavailable (OS / GPU)";
       case RefareMetalFX::Support::Failed: return "Unavailable (fallback active)";
-      case RefareMetalFX::Support::Available: return Config::Get(Config::GFX_METALFX_SPATIAL) ? "On" : "Off";
+      case RefareMetalFX::Support::Available:
+        if (!MetalFXOn()) return "Off";
+        value_text = std::to_string(metalfx_scale) + "% render scale" + (metalfx_scale == 100 ? " (anti-aliasing)" : "");
+        return value_text.c_str();
       }
 #endif
       return "Unavailable";
@@ -505,6 +566,9 @@ struct OptionsMenu::Impl {
     const auto on_off = [&](bool on) { out.choices = {"OFF", "ON"}; out.value = on ? 1 : 0; };
     switch (row) {
     case Row::Scale:
+      if (auto_efb_scale) {  // MetalFX picks it
+        out.choices = {"AUTO (" + std::to_string(auto_efb_scale) + "X)"}; out.enabled = false; break;
+      }
       for (const auto& s : scales) out.choices.push_back(s.value == 1 ? "1X NATIVE" : std::to_string(s.value) + "X");
       out.value = scale_index; break;
     case Row::Aspect:
@@ -514,7 +578,7 @@ struct OptionsMenu::Impl {
     case Row::FXAA: on_off(fxaa); break;
     case Row::MetalFX:
 #ifdef __APPLE__
-      if (MetalFXAvailable()) { on_off(Config::Get(Config::GFX_METALFX_SPATIAL)); break; }
+      if (MetalFXAvailable()) { out.choices = {"OFF", "100%", "75%", "50%"}; out.value = MetalFXState(); break; }
 #endif
       out.choices = {"UNAVAILABLE"}; out.enabled = false; break;
     case Row::Interpolation:
@@ -537,14 +601,15 @@ struct OptionsMenu::Impl {
     value = std::clamp(value, 0, std::max(0, static_cast<int>(current.choices.size()) - 1));
     if (!current.enabled || value == current.value) return;
     switch (row) {
-    case Row::Scale: scale_index = value; ApplyScale(); break;
+    case Row::Scale: if (!auto_efb_scale) { scale_index = value; ApplyScale(); } break;
+    case Row::MetalFX: SetMetalFXState(value); break;
     case Row::Aspect: aspect_index = value; ApplyAspect(); break;
     case Row::HudLayout: center_hud = value == 1; ApplyHudLayout(); break;
     case Row::FXAA: fxaa = value == 1; ApplyFXAA(); break;
     case Row::Interpolation: interp_index = value; ApplyInterpolation(); break;
     case Row::VSync: vsync = value == 1; ApplyVSync(); break;
     case Row::MetalHUD: metal_hud = value == 1; ApplyMetalHUD(); break;
-    case Row::MetalFX: case Row::PerfOverlay: {  // Step() toggles/cycles these
+    case Row::PerfOverlay: {  // Step() cycles this
       const int saved = selected;
       const auto& rows = Rows();
       selected = static_cast<int>(std::find(rows.begin(), rows.end(), row) - rows.begin());
@@ -624,6 +689,7 @@ struct OptionsMenu::Impl {
     if (!ImGui::GetCurrentContext()) return;
     // Render thread, every present: keep "Match display" on the right rate.
     RefareFrameInterpolation::SetDisplayRate(DisplayRefreshRate(render_view));
+    UpdateMetalFXScale();
     SyncGameMenu();
     if (!hud_applied) {
       PrioritizeCurrentThread();  // Render thread.

@@ -146,7 +146,7 @@ at the title screen and during play; no game-state addresses are assumed.
 Both buttons can be changed from the menu itself (see **Options menu button** below).
 
 - D-pad up/down selects resolution scale, aspect ratio, HUD and menus
-  (Centered/Stretched), FXAA, MetalFX spatial upscaling (supported Apple devices), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS and iOS only), FPS counter (Off, On, or On + frame times),
+  (Centered/Stretched), FXAA, MetalFX spatial upscaling (Off / 100% / 75% / 50%, supported Apple devices), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS and iOS only), FPS counter (Off, On, or On + frame times),
   options menu button, or Exit The Game.
 - D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
 - **Options menu button**: press Cross/Enter (or click Change), then press the
@@ -279,6 +279,15 @@ ReFare is an unofficial fan project. It is not affiliated with or endorsed by
 SEGA or Nintendo. Crazy Taxi is a trademark of SEGA. No disc image, extracted
 game data or copyrighted game assets are included in this repository.
 
-MetalFX spatial upscaling is available in the macOS L1/Tab menu with the Metal
-backend on macOS 13+ and supported GPUs. It defaults to Off; choose a lower
-resolution scale than the window resolution to use the upscaler.
+MetalFX spatial upscaling (macOS 13+ / iOS 16+ with a supported GPU, Metal
+backend) has four settings: **Off** (default), **100%**, **75%** and **50%**.
+The percentage is the render resolution relative to the game area on screen;
+100% uses MetalFX as anti-aliasing, 75% and 50% render less and let MetalFX
+upscale. Dolphin only renders at whole-number scales of the GameCube's 480
+lines, so ReFare picks the scale closest to that percentage (never above the
+screen, so MetalFX always runs) and updates it when the window changes size.
+While MetalFX is on, Resolution shows "Auto" and can't be changed; turning
+MetalFX off returns to your own Resolution, which is never overwritten. The
+percentage is saved as `MetalFXScale` in `Config/ReFare.ini`. On smaller
+windows two percentages can land on the same scale (for example 100% and 75%
+both render at 2x in a 1080p-tall game area).

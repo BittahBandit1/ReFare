@@ -98,7 +98,8 @@ default. On supported hardware, turn it on to upscale the cropped game image
 to its final display rectangle. The internal resolution setting is preserved.
 MetalFX runs before final post-processing and the options overlay; UIKit touch
 controls also remain at display resolution. FXAA can be used independently.
-The choice persists in Config/GFX.ini under Enhancements/MetalFXSpatial.
+The choice persists in Config/GFX.ini under Enhancements/MetalFXSpatial, and
+the render scale (100%, 75% or 50%; see the README) in Config/ReFare.ini.
 
 MetalFX requires iOS 16+ and a GPU accepted by Apple's supportsDevice query.
 The app still targets iOS 15: MetalFX is weak-linked and all API calls are
