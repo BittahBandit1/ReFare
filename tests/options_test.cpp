@@ -104,6 +104,11 @@ int main(int argc, char** argv) {
       };
       const int fxaa = find("FXAA"), scale = find("RESOLUTION");
       Check(fxaa >= 0 && scale >= 0 && find("EXIT THE GAME") < 0, "In-game settings rows missing");
+#if defined(__APPLE__)
+      Check(find("METAL HUD") >= 0, "Metal HUD row missing on Apple");
+#else
+      Check(find("METAL HUD") < 0 && find("METALFX UPSCALING") < 0, "Metal-only rows shown on a non-Apple OS");
+#endif
       Check(rows[fxaa].choices == std::vector<std::string>{"OFF","ON"} && rows[fxaa].value == 0, "In-game FXAA row wrong");
       Check(rows[scale].choices.size() == 7 && rows[scale].choices[0] == "1X NATIVE", "In-game resolution choices wrong");
       for (const auto& row : rows)

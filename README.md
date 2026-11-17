@@ -146,7 +146,7 @@ at the title screen and during play; no game-state addresses are assumed.
 Both buttons can be changed from the menu itself (see **Options menu button** below).
 
 - D-pad up/down selects resolution scale, aspect ratio, HUD and menus
-  (Centered/Stretched), FXAA, MetalFX spatial upscaling (supported Apple devices), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS), FPS counter (Off, On, or On + frame times),
+  (Centered/Stretched), FXAA, MetalFX spatial upscaling (supported Apple devices), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS and iOS only), FPS counter (Off, On, or On + frame times),
   options menu button, or Exit The Game.
 - D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
 - **Options menu button**: press Cross/Enter (or click Change), then press the
