@@ -9,6 +9,7 @@
 #include "VideoCommon/VertexShaderManager.h"
 #include "VideoCommon/VideoEvents.h"
 #include "imgui.h"
+#include <cctype>
 #include <filesystem>
 #include <cstdlib>
 #include <cmath>
@@ -95,6 +96,28 @@ int main(int argc, char** argv) {
       input[button]=true; frame(); input[button]=false; frame();
     };
     frame(); Check(!refare::OptionsMenuBlocksInput(),"Closed menu blocks input");
+    {  // Rows for the game's own OPTIONS screen, and choices sent back from it.
+      auto rows = refare::GameMenuSnapshot();
+      const auto find = [&](const char* label) {
+        for (size_t i = 0; i < rows.size(); ++i) if (rows[i].label == label) return static_cast<int>(i);
+        return -1;
+      };
+      const int fxaa = find("FXAA"), scale = find("RESOLUTION");
+      Check(fxaa >= 0 && scale >= 0 && find("EXIT THE GAME") < 0, "In-game settings rows missing");
+      Check(rows[fxaa].choices == std::vector<std::string>{"OFF","ON"} && rows[fxaa].value == 0, "In-game FXAA row wrong");
+      Check(rows[scale].choices.size() == 7 && rows[scale].choices[0] == "1X NATIVE", "In-game resolution choices wrong");
+      for (const auto& row : rows)
+        for (const auto& choice : row.choices)
+          Check(choice.size() < 32 && choice == [&]{ std::string u = choice; for (auto& c : u) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); return u; }(),
+                "In-game choice text must be upper case and fit 31 characters");
+      refare::RequestGameMenuChoice(fxaa, 1);
+      frame();
+      rows = refare::GameMenuSnapshot();
+      Check(rows[fxaa].value == 1 && Config::Get(Config::GFX_ENHANCE_POST_SHADER) == "FXAA", "In-game FXAA choice not applied");
+      refare::RequestGameMenuChoice(fxaa, 0);
+      frame();
+      Check(refare::GameMenuSnapshot()[fxaa].value == 0 && Config::Get(Config::GFX_ENHANCE_POST_SHADER).empty(), "In-game FXAA choice not reverted");
+    }
     tap(refare::Toggle);
     Check(refare::OptionsMenuBlocksInput(),"L1/Tab did not open menu");
     Check(ImGui::GetDrawData()->TotalVtxCount>0,"Options overlay did not render");
@@ -271,5 +294,5 @@ int main(int argc, char** argv) {
     tap(refare::Toggle);
   }
   ImGui::DestroyContext(); Config::Shutdown();
-  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, interpolation rates, V-Sync, menu button rebinding, exit confirmation, HUD default/toggle/persistence, and input release\n";
+  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, interpolation rates, V-Sync, menu button rebinding, in-game settings rows, exit confirmation, HUD default/toggle/persistence, and input release\n";
 }

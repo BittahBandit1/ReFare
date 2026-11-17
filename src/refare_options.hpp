@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 namespace refare {
 enum OptionsButton { Toggle, Up, Down, Left, Right, Back, Confirm, Count };
 using OptionsInput = std::array<bool, Count>;
@@ -32,6 +33,17 @@ private:
   std::unique_ptr<Impl> m_impl;
 };
 bool OptionsMenuBlocksInput();
+// ReFare settings shown inside the game's own OPTIONS screen. The render
+// thread publishes the rows; the CPU thread reads them and sends choices back.
+struct GameMenuRow {
+  std::string label;
+  std::vector<std::string> choices;
+  int value = 0;
+  bool enabled = true;
+  bool operator==(const GameMenuRow&) const = default;
+};
+std::vector<GameMenuRow> GameMenuSnapshot();
+void RequestGameMenuChoice(int index, int value);
 void PrepareMetalHUD();
 MenuButtonBinding LoadMenuButtonBinding(const std::filesystem::path& user_directory);
 bool SaveMenuButtonBinding(const std::filesystem::path& user_directory, const MenuButtonBinding& binding);

@@ -7,7 +7,7 @@ index 91a8d5f..30b7c8e 100644
      endif()
      target_link_libraries(moderngekko PRIVATE core uicommon)
 +    if(REFARE_OPTIONS_SOURCE_DIR)
-+        target_sources(moderngekko PRIVATE "${REFARE_OPTIONS_SOURCE_DIR}/refare_options.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_runtime_services.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_widescreen_culling.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_button_prompts.cpp")
++        target_sources(moderngekko PRIVATE "${REFARE_OPTIONS_SOURCE_DIR}/refare_options.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_runtime_services.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_widescreen_culling.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_game_menu.cpp" "${REFARE_OPTIONS_SOURCE_DIR}/refare_button_prompts.cpp")
 +        target_include_directories(moderngekko PRIVATE "${REFARE_OPTIONS_SOURCE_DIR}")
 +        target_link_libraries(moderngekko PRIVATE imgui)
 +        target_compile_definitions(moderngekko PRIVATE REFARE_OPTIONS_MENU=1)

@@ -20,12 +20,17 @@
 #include <cctype>
 #include <optional>
 #include <cstdlib>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace refare {
 namespace {
 std::atomic<bool> s_blocks_input{false};
+// In-game OPTIONS rows (published by the render thread, read on the CPU thread).
+std::mutex s_game_mutex;
+std::vector<GameMenuRow> s_game_rows;
+std::vector<std::pair<int,int>> s_game_requests;
 struct Scale { int value; const char* label; const char* resolution; };
 constexpr std::array<Scale, 7> scales = {{{1,"1x (native)","640x528"},
  {2,"2x","1280x720"},{3,"3x","1920x1080"},{4,"4x","2560x1440"},
@@ -64,6 +69,30 @@ const std::vector<Row>& Rows() {
 #endif
     Row::Exit};
   return rows;
+}
+// Rows shown in the game's own menu: everything except the button capture
+// and Exit, which stay in the overlay.
+const std::vector<Row>& GameRows() {
+  static const std::vector<Row> rows = [] {
+    std::vector<Row> out;
+    for (Row row : Rows()) if (row != Row::MenuButton && row != Row::Exit) out.push_back(row);
+    return out;
+  }();
+  return rows;
+}
+const char* GameRowLabel(Row row) {
+  switch (row) {
+  case Row::Scale: return "RESOLUTION";
+  case Row::Aspect: return "ASPECT RATIO";
+  case Row::HudLayout: return "HUD AND MENUS";
+  case Row::FXAA: return "FXAA";
+  case Row::MetalFX: return "METALFX UPSCALING";
+  case Row::Interpolation: return "INTERPOLATION";
+  case Row::VSync: return "V-SYNC";
+  case Row::MetalHUD: return "METAL HUD";
+  case Row::PerfOverlay: return "FPS COUNTER";
+  default: return "";
+  }
 }
 const char* RowLabel(Row row) {
   switch (row) {
@@ -224,11 +253,16 @@ struct OptionsMenu::Impl {
     frontend.Load((directory / "Config" / "ReFare.ini").string());
     frontend.GetOrCreateSection("Video")->Get("FPSCounter", &perf_overlay, 0);
     perf_overlay = std::clamp(perf_overlay, 0, 2);
+    ReadSettings();
     present_hook = GetVideoEvents().after_present_event.Register(
         [this](const PresentInfo& info) { intervals.Record(info); });
     draw_hook = GetVideoEvents().imgui_draw_event.Register([this] { Draw(); });
   }
-  ~Impl() { present_hook.reset(); draw_hook.reset(); s_blocks_input = false; }
+  ~Impl() {
+    present_hook.reset(); draw_hook.reset(); s_blocks_input = false;
+    std::lock_guard lock(s_game_mutex);
+    s_game_rows.clear(); s_game_requests.clear();
+  }
   Row CurrentRow() const { return Rows()[selected]; }
   void ReadSettings() {
     metal_hud = LoadMetalHUDPreference(directory);
@@ -458,6 +492,84 @@ struct OptionsMenu::Impl {
     }
     return "";
   }
+  bool MetalFXAvailable() const {
+#ifdef __APPLE__
+    return Config::Get(Config::GFX_METALFX_SPATIAL) || RefareMetalFX::GetSupport() == RefareMetalFX::Support::Available;
+#else
+    return false;
+#endif
+  }
+  GameMenuRow GameRow(Row row) const {
+    GameMenuRow out;
+    out.label = GameRowLabel(row);
+    const auto on_off = [&](bool on) { out.choices = {"OFF", "ON"}; out.value = on ? 1 : 0; };
+    switch (row) {
+    case Row::Scale:
+      for (const auto& s : scales) out.choices.push_back(s.value == 1 ? "1X NATIVE" : std::to_string(s.value) + "X");
+      out.value = scale_index; break;
+    case Row::Aspect:
+      out.choices = {"FIT WINDOW", "4:3", "16:9", "16:10", "21:9", "32:9"};
+      out.value = aspect_index; break;
+    case Row::HudLayout: out.choices = {"STRETCHED", "CENTERED"}; out.value = center_hud ? 1 : 0; break;
+    case Row::FXAA: on_off(fxaa); break;
+    case Row::MetalFX:
+#ifdef __APPLE__
+      if (MetalFXAvailable()) { on_off(Config::Get(Config::GFX_METALFX_SPATIAL)); break; }
+#endif
+      out.choices = {"UNAVAILABLE"}; out.enabled = false; break;
+    case Row::Interpolation:
+      out.choices = {"OFF", "MATCH DISPLAY", "90 FPS", "120 FPS", "144 FPS", "180 FPS"};
+      out.value = interp_index; break;
+    case Row::VSync: on_off(vsync); break;
+    case Row::MetalHUD:
+      if (MetalHUDSupported()) on_off(metal_hud);
+      else { out.choices = {"UNAVAILABLE"}; out.enabled = false; }
+      break;
+    case Row::PerfOverlay: out.choices = {"OFF", "ON", "WITH GRAPH"}; out.value = perf_overlay; break;
+    default: break;
+    }
+    out.value = std::clamp(out.value, 0, std::max(0, static_cast<int>(out.choices.size()) - 1));
+    return out;
+  }
+  // A choice made in the game's menu: apply it as if picked here.
+  void SetGameChoice(Row row, int value) {
+    GameMenuRow current = GameRow(row);
+    value = std::clamp(value, 0, std::max(0, static_cast<int>(current.choices.size()) - 1));
+    if (!current.enabled || value == current.value) return;
+    switch (row) {
+    case Row::Scale: scale_index = value; ApplyScale(); break;
+    case Row::Aspect: aspect_index = value; ApplyAspect(); break;
+    case Row::HudLayout: center_hud = value == 1; ApplyHudLayout(); break;
+    case Row::FXAA: fxaa = value == 1; ApplyFXAA(); break;
+    case Row::Interpolation: interp_index = value; ApplyInterpolation(); break;
+    case Row::VSync: vsync = value == 1; ApplyVSync(); break;
+    case Row::MetalHUD: metal_hud = value == 1; ApplyMetalHUD(); break;
+    case Row::MetalFX: case Row::PerfOverlay: {  // Step() toggles/cycles these
+      const int saved = selected;
+      const auto& rows = Rows();
+      selected = static_cast<int>(std::find(rows.begin(), rows.end(), row) - rows.begin());
+      for (int guard = 0; guard < 4 && GameRow(row).value != value; ++guard) Step(1);
+      selected = saved;
+      break;
+    }
+    default: break;
+    }
+  }
+  void SyncGameMenu() {
+    std::vector<std::pair<int,int>> requests;
+    {
+      std::lock_guard lock(s_game_mutex);
+      requests.swap(s_game_requests);
+    }
+    const auto& game_rows = GameRows();
+    for (const auto& [index, value] : requests)
+      if (index >= 0 && index < static_cast<int>(game_rows.size())) SetGameChoice(game_rows[index], value);
+    std::vector<GameMenuRow> rows;
+    rows.reserve(game_rows.size());
+    for (Row row : game_rows) rows.push_back(GameRow(row));
+    std::lock_guard lock(s_game_mutex);
+    if (rows != s_game_rows) s_game_rows = std::move(rows);
+  }
   void HandleInput(const Buttons& pressed) {
     if (confirm_exit) {
       if (pressed[Left]) exit_choice = 0;
@@ -512,6 +624,7 @@ struct OptionsMenu::Impl {
     if (!ImGui::GetCurrentContext()) return;
     // Render thread, every present: keep "Match display" on the right rate.
     RefareFrameInterpolation::SetDisplayRate(DisplayRefreshRate(render_view));
+    SyncGameMenu();
     if (!hud_applied) {
       PrioritizeCurrentThread();  // Render thread.
       // With MTL_HUD_ENABLED set at launch the HUD is already visible. Only
@@ -627,6 +740,14 @@ OptionsMenu::OptionsMenu(std::filesystem::path directory, std::function<OptionsI
                                   std::move(request_exit),std::move(capture_source))) {}
 OptionsMenu::~OptionsMenu() = default;
 bool OptionsMenuBlocksInput() {return s_blocks_input.load();}
+std::vector<GameMenuRow> GameMenuSnapshot() {
+  std::lock_guard lock(s_game_mutex);
+  return s_game_rows;
+}
+void RequestGameMenuChoice(int index, int value) {
+  std::lock_guard lock(s_game_mutex);
+  s_game_requests.emplace_back(index, value);
+}
 void PrepareMetalHUD() {
 #ifdef __APPLE__
   // Enable the HUD machinery before Metal device creation, even for a saved

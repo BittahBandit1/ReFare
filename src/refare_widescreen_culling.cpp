@@ -1,4 +1,5 @@
 #include "refare_widescreen_culling.hpp"
+#include "refare_game_menu.hpp"
 #include "VideoCommon/VideoConfig.h"
 #include "refare_metal_hud.hpp"
 #include <bit>
@@ -187,7 +188,9 @@ void TraceDisplayList(CPUState* state) {
 
 const ModernGekkoModPatch kPatches[] = {RECOMP_PATCH(kSetViewCone, SetViewCone)};
 
-ModernGekkoModHook kHooks[] = {RECOMP_HOOK(kPlaneBuilder, WidenCulling),
+// ReFare's built-in game hooks; the display-list tracer stays last (optional).
+ModernGekkoModHook kHooks[] = {RECOMP_HOOK(kGameMenuEngine, GameMenuTick),
+                               RECOMP_HOOK(kPlaneBuilder, WidenCulling),
                                RECOMP_HOOK(kGXCallDisplayList, TraceDisplayList)};
 
 ModernGekkoModDesc kDescriptor = {
@@ -200,7 +203,7 @@ ModernGekkoModDesc kDescriptor = {
     "ReFare widescreen culling",
     nullptr, 0u,       // dependencies
     kPatches, 1u,      // patches
-    kHooks, 1u,        // hooks
+    kHooks, 2u,        // hooks
     nullptr, 0u,       // exports
     nullptr, 0u,       // imports
     nullptr, 0u,       // events
@@ -212,7 +215,12 @@ ModernGekkoModDesc kDescriptor = {
 const ModernGekkoModDesc* WidescreenCullingMod() {
   // The display-list tracer intercepts every draw call; register it only on request.
   const char* trace = std::getenv("REFARE_DL_TRACE");
-  kDescriptor.num_hooks = (trace && trace[0] == '1') ? 2u : 1u;
+  kDescriptor.num_hooks = (trace && trace[0] == '1') ? 3u : 2u;
+  // REFARE_GAME_MENU=0 keeps ReFare out of the game's OPTIONS screen.
+  if (const char* menu = std::getenv("REFARE_GAME_MENU"); menu && menu[0] == '0') {
+    kHooks[0] = kHooks[1]; kHooks[1] = kHooks[2];
+    --kDescriptor.num_hooks;
+  }
   return &kDescriptor;
 }
 }  // namespace refare

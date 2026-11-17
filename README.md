@@ -158,6 +158,17 @@ Both buttons can be changed from the menu itself (see **Options menu button** be
 - Exit The Game asks "Are you sure?" (No on the left, Yes on the right).
 - Circle or the menu button (L1 by default) closes the menu. Keyboard alternatives: arrow keys, Enter, and Escape or the menu key (Tab by default).
 
+### ReFare settings in the game's OPTIONS screen (desktop)
+
+The same settings also appear inside Crazy Taxi's own menus: **MODE SELECTION →
+OPTIONS → REFARE SETTINGS** (between RUMBLE FEATURE and EXIT). They use the
+game's own rows, lettering and controls: up/down to pick a setting, left/right
+to change it, EXIT or B to go back. Changes apply immediately, are saved, and
+stay in step with the overlay. Options menu button and Exit The Game stay in
+the overlay. Settings a device can't use (for example MetalFX on older Macs)
+show UNAVAILABLE. See [docs/IN-GAME-SETTINGS.md](docs/IN-GAME-SETTINGS.md) for
+how it works; `REFARE_GAME_MENU=0` leaves the game's OPTIONS screen untouched.
+
 Cmd+Return toggles fullscreen. The game ignores input while another app (for
 example Spotlight) is active.
 
