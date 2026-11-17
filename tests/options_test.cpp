@@ -108,6 +108,8 @@ int main(int argc, char** argv) {
       Check(find("METAL HUD") >= 0, "Metal HUD row missing on Apple");
 #else
       Check(find("METAL HUD") < 0 && find("METALFX UPSCALING") < 0, "Metal-only rows shown on a non-Apple OS");
+      Check(find("FSR UPSCALING") >= 0 && rows[find("FSR UPSCALING")].choices == std::vector<std::string>{"OFF","100%","75%","50%"},
+            "FSR row missing on a non-Apple OS");
 #endif
       Check(rows[fxaa].choices == std::vector<std::string>{"OFF","ON"} && rows[fxaa].value == 0, "In-game FXAA row wrong");
       Check(rows[scale].choices.size() == 7 && rows[scale].choices[0] == "1X NATIVE", "In-game resolution choices wrong");
@@ -150,8 +152,22 @@ int main(int argc, char** argv) {
     tap(refare::Right);
     Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER).empty(),"FXAA did not turn off");
     tap(refare::Right);
-#ifdef __APPLE__
-    tap(refare::Down);  // MetalFX spatial upscaling (tested separately with GPU capability).
+    tap(refare::Down);  // Upscaling: MetalFX on Apple (tested separately with GPU capability), FSR 1.0 elsewhere.
+#ifndef __APPLE__
+    {
+      Check(std::filesystem::exists(directory/"Shaders"/"FSR1.glsl"),"FSR 1.0 shader was not installed");
+      const auto saved_scale=[&]{ Common::IniFile ini; ini.Load((directory/"Config"/"ReFare.ini").string());
+        int v=0; ini.GetOrCreateSection("Video")->Get("UpscalerScale",&v,0); return v; };
+      tap(refare::Right);
+      Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER)=="FSR1" && saved_scale()==100,"FSR 100% was not selected");
+      tap(refare::Right); Check(saved_scale()==75,"FSR 75% was not saved");
+      tap(refare::Right); Check(saved_scale()==50 && Config::Get(Config::GFX_ENHANCE_POST_SHADER)=="FSR1","FSR 50% was not saved");
+      tap(refare::Right); Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER).empty(),"FSR did not turn off");
+      tap(refare::Right); tap(refare::Up); tap(refare::Right);  // FSR on, then FXAA replaces it
+      Check(Config::Get(Config::GFX_ENHANCE_POST_SHADER)=="FXAA","FXAA did not replace FSR");
+      tap(refare::Down);  // FXAA stays on (checked below), back to the upscaler row
+      Check(!Config::Get(Config::GFX_ENHANCE_POST_SHADER).empty() && Config::Get(Config::GFX_ENHANCE_POST_SHADER)!="FSR1","FSR still active with FXAA on");
+    }
 #endif
     // Interpolation: Off -> Match display -> 90/120/144/180 FPS, wrapping.
     tap(refare::Down);
@@ -299,5 +315,5 @@ int main(int argc, char** argv) {
     tap(refare::Toggle);
   }
   ImGui::DestroyContext(); Config::Shutdown();
-  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, interpolation rates, V-Sync, menu button rebinding, in-game settings rows, exit confirmation, HUD default/toggle/persistence, and input release\n";
+  std::cout << "PASS: overlay rendering, controls, live settings, HUD layout, FXAA, interpolation rates, V-Sync, menu button rebinding, in-game settings rows, FSR 1.0 / MetalFX render scale, exit confirmation, HUD default/toggle/persistence, and input release\n";
 }

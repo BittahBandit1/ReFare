@@ -1,5 +1,6 @@
 #include "refare_options.hpp"
 #include "refare_perf_overlay.hpp"
+#include "refare_fsr1.hpp"
 #include "refare_metal_hud.hpp"
 #include "refare_runtime_services.hpp"
 #include "Common/Config/Config.h"
@@ -52,12 +53,10 @@ constexpr std::array<InterpChoice,6> kInterpChoices = {{
   {"Off",false,0},{"Match display",true,0},{"90 FPS",true,90},
   {"120 FPS",true,120},{"144 FPS",true,144},{"180 FPS",true,180}}};
 
-enum class Row { Scale, Aspect, HudLayout, FXAA, MetalFX, Interpolation, VSync, MetalHUD, PerfOverlay, MenuButton, Exit };
+enum class Row { Scale, Aspect, HudLayout, FXAA, Upscaler, Interpolation, VSync, MetalHUD, PerfOverlay, MenuButton, Exit };
 const std::vector<Row>& Rows() {
   static const std::vector<Row> rows = {Row::Scale, Row::Aspect, Row::HudLayout, Row::FXAA,
-#ifdef __APPLE__
-    Row::MetalFX,
-#endif
+    Row::Upscaler,  // MetalFX on Apple platforms, FSR 1.0 elsewhere
     Row::Interpolation,
 #ifndef REFARE_IOS
     Row::VSync,
@@ -88,7 +87,11 @@ const char* GameRowLabel(Row row) {
   case Row::Aspect: return "ASPECT RATIO";
   case Row::HudLayout: return "HUD AND MENUS";
   case Row::FXAA: return "FXAA";
-  case Row::MetalFX: return "METALFX UPSCALING";
+#ifdef __APPLE__
+  case Row::Upscaler: return "METALFX UPSCALING";
+#else
+  case Row::Upscaler: return "FSR UPSCALING";
+#endif
   case Row::Interpolation: return "INTERPOLATION";
   case Row::VSync: return "V-SYNC";
   case Row::MetalHUD: return "METAL HUD";
@@ -102,7 +105,11 @@ const char* RowLabel(Row row) {
   case Row::Aspect: return "Aspect ratio";
   case Row::HudLayout: return "HUD and menus";
   case Row::FXAA: return "FXAA";
-  case Row::MetalFX: return "MetalFX spatial upscaling";
+#ifdef __APPLE__
+  case Row::Upscaler: return "MetalFX spatial upscaling";
+#else
+  case Row::Upscaler: return "FSR 1.0 upscaling";
+#endif
   case Row::Interpolation: return "Interpolation (experimental)";
   case Row::VSync: return "V-Sync";
   case Row::MetalHUD: return "Metal HUD";
@@ -217,8 +224,9 @@ struct OptionsMenu::Impl {
   Common::EventHook present_hook;
   perf::FrameIntervals intervals;
   int perf_overlay = 0;
-  // MetalFX render scale (% of the game area's height): 100 is anti-aliasing,
-  // 75 and 50 render less and upscale. Saved in Config/ReFare.ini.
+  // Upscaler (MetalFX on Apple, FSR 1.0 elsewhere) render scale, as % of the
+  // game area's height: 100 is anti-aliasing / plain FSR, 75 and 50 render
+  // less and upscale. Saved in Config/ReFare.ini.
   int metalfx_scale = 100;
   int auto_efb_scale = 0;  // render scale picked for MetalFX (0 = user's)
   FramePacingRecorder pacing_recorder;
@@ -259,8 +267,11 @@ struct OptionsMenu::Impl {
     frontend.Load((directory / "Config" / "ReFare.ini").string());
     frontend.GetOrCreateSection("Video")->Get("FPSCounter", &perf_overlay, 0);
     perf_overlay = std::clamp(perf_overlay, 0, 2);
-    frontend.GetOrCreateSection("Video")->Get("MetalFXScale", &metalfx_scale, 100);
+    frontend.GetOrCreateSection("Video")->Get("UpscalerScale", &metalfx_scale, 100);
     if (metalfx_scale != 75 && metalfx_scale != 50) metalfx_scale = 100;
+#ifndef __APPLE__
+    if (!InstallFSR1Shader(directory)) save_error = "Could not install the FSR 1.0 shader.";
+#endif
     ReadSettings();
     present_hook = GetVideoEvents().after_present_event.Register(
         [this](const PresentInfo& info) { intervals.Record(info); });
@@ -329,7 +340,7 @@ struct OptionsMenu::Impl {
 #ifdef __APPLE__
     return Config::Get(Config::GFX_METALFX_SPATIAL);
 #else
-    return false;
+    return Config::Get(Config::GFX_ENHANCE_POST_SHADER) == kFSR1Shader;
 #endif
   }
   int MetalFXState() const {
@@ -337,24 +348,32 @@ struct OptionsMenu::Impl {
     return metalfx_scale == 75 ? 2 : metalfx_scale == 50 ? 3 : 1;
   }
   void SetMetalFXState(int state) {
-#ifdef __APPLE__
     state = std::clamp(state, 0, 3);
     const bool enabled = state != 0;
     if (enabled && !MetalFXAvailable()) return;
     if (enabled) metalfx_scale = kMetalFXScales[state];
+#ifdef __APPLE__
     Config::SetBaseOrCurrent(Config::GFX_METALFX_SPATIAL, enabled);
     SaveGraphics([&](Common::IniFile& ini) { ini.GetOrCreateSection("Enhancements")->Set("MetalFXSpatial", enabled); });
+#else
+    // FSR 1.0 is a post-processing shader, so it replaces FXAA (and vice versa).
+    if (enabled || MetalFXOn()) {
+      const std::string shader = enabled ? kFSR1Shader : "";
+      if (enabled) fxaa = false;
+      Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, shader);
+      SaveGraphics([&](Common::IniFile& ini) { ini.GetOrCreateSection("Enhancements")->Set("PostProcessingShader", shader); });
+    }
+#endif
+    {
     Common::IniFile ini;
     const auto file = (directory / "Config" / "ReFare.ini").string();
     ini.Load(file);
-    ini.GetOrCreateSection("Video")->Set("MetalFXScale", metalfx_scale);
+    ini.GetOrCreateSection("Video")->Set("UpscalerScale", metalfx_scale);
     std::error_code ec;
     std::filesystem::create_directories(directory / "Config", ec);
-    if (ec || !ini.Save(file)) save_error = "Could not save the MetalFX render scale.";
+    if (ec || !ini.Save(file)) save_error = "Could not save the upscaling render scale.";
+    }
     UpdateMetalFXScale();
-#else
-    (void)state;
-#endif
   }
   // While MetalFX is on, render at the whole-number scale closest to the
   // chosen percentage of the game area's height (never above it, so MetalFX
@@ -470,7 +489,7 @@ struct OptionsMenu::Impl {
     }
     case Row::HudLayout: center_hud = !center_hud; ApplyHudLayout(); break;
     case Row::FXAA: fxaa = !fxaa; ApplyFXAA(); break;
-    case Row::MetalFX:  // Off, 100%, 75%, 50%
+    case Row::Upscaler:  // Off, 100%, 75%, 50%
       if (MetalFXAvailable()) SetMetalFXState((MetalFXState() + delta + 4) % 4);
       break;
     case Row::Interpolation: {
@@ -503,7 +522,7 @@ struct OptionsMenu::Impl {
     switch (CurrentRow()) {
     case Row::Exit: confirm_exit = true; exit_choice = 0; break;
     case Row::MenuButton: StartCapture(); break;
-    case Row::HudLayout: case Row::FXAA: case Row::MetalFX: case Row::Interpolation: case Row::VSync: case Row::MetalHUD: case Row::PerfOverlay: Step(1); break;
+    case Row::HudLayout: case Row::FXAA: case Row::Upscaler: case Row::Interpolation: case Row::VSync: case Row::MetalHUD: case Row::PerfOverlay: Step(1); break;
     default: break;
     }
   }
@@ -517,12 +536,16 @@ struct OptionsMenu::Impl {
     switch (row) {
     case Row::Scale:
       if (!auto_efb_scale) return scales[scale_index].label;
+#ifdef __APPLE__
       value_text = "Auto for MetalFX (" + std::to_string(auto_efb_scale) + "x)";
+#else
+      value_text = "Auto for FSR (" + std::to_string(auto_efb_scale) + "x)";
+#endif
       return value_text.c_str();
     case Row::Aspect: return aspects[aspect_index].label;
     case Row::HudLayout: return center_hud ? "Centered (4:3)" : "Stretched";
     case Row::FXAA: return fxaa ? "On" : "Off";
-    case Row::MetalFX:
+    case Row::Upscaler:
 #ifdef __APPLE__
       switch (RefareMetalFX::GetSupport()) {
       case RefareMetalFX::Support::NotReady: return "Waiting for renderer";
@@ -533,6 +556,10 @@ struct OptionsMenu::Impl {
         value_text = std::to_string(metalfx_scale) + "% render scale" + (metalfx_scale == 100 ? " (anti-aliasing)" : "");
         return value_text.c_str();
       }
+#else
+      if (!MetalFXOn()) return "Off";
+      value_text = std::to_string(metalfx_scale) + "% render scale (FSR 1.0)";
+      return value_text.c_str();
 #endif
       return "Unavailable";
     case Row::Interpolation: {
@@ -557,7 +584,7 @@ struct OptionsMenu::Impl {
 #ifdef __APPLE__
     return Config::Get(Config::GFX_METALFX_SPATIAL) || RefareMetalFX::GetSupport() == RefareMetalFX::Support::Available;
 #else
-    return false;
+    return true;  // FSR 1.0 runs as a post-processing shader on every backend
 #endif
   }
   GameMenuRow GameRow(Row row) const {
@@ -576,10 +603,8 @@ struct OptionsMenu::Impl {
       out.value = aspect_index; break;
     case Row::HudLayout: out.choices = {"STRETCHED", "CENTERED"}; out.value = center_hud ? 1 : 0; break;
     case Row::FXAA: on_off(fxaa); break;
-    case Row::MetalFX:
-#ifdef __APPLE__
+    case Row::Upscaler:
       if (MetalFXAvailable()) { out.choices = {"OFF", "100%", "75%", "50%"}; out.value = MetalFXState(); break; }
-#endif
       out.choices = {"UNAVAILABLE"}; out.enabled = false; break;
     case Row::Interpolation:
       out.choices = {"OFF", "MATCH DISPLAY", "90 FPS", "120 FPS", "144 FPS", "180 FPS"};
@@ -602,7 +627,7 @@ struct OptionsMenu::Impl {
     if (!current.enabled || value == current.value) return;
     switch (row) {
     case Row::Scale: if (!auto_efb_scale) { scale_index = value; ApplyScale(); } break;
-    case Row::MetalFX: SetMetalFXState(value); break;
+    case Row::Upscaler: SetMetalFXState(value); break;
     case Row::Aspect: aspect_index = value; ApplyAspect(); break;
     case Row::HudLayout: center_hud = value == 1; ApplyHudLayout(); break;
     case Row::FXAA: fxaa = value == 1; ApplyFXAA(); break;

@@ -146,7 +146,7 @@ at the title screen and during play; no game-state addresses are assumed.
 Both buttons can be changed from the menu itself (see **Options menu button** below).
 
 - D-pad up/down selects resolution scale, aspect ratio, HUD and menus
-  (Centered/Stretched), FXAA, MetalFX spatial upscaling (Off / 100% / 75% / 50%, supported Apple devices), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS and iOS only), FPS counter (Off, On, or On + frame times),
+  (Centered/Stretched), FXAA, upscaling (Off / 100% / 75% / 50%: MetalFX on supported Apple devices, FSR 1.0 on Android, Windows and Linux), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS and iOS only), FPS counter (Off, On, or On + frame times),
   options menu button, or Exit The Game.
 - D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
 - **Options menu button**: press Cross/Enter (or click Change), then press the
@@ -288,6 +288,15 @@ lines, so ReFare picks the scale closest to that percentage (never above the
 screen, so MetalFX always runs) and updates it when the window changes size.
 While MetalFX is on, Resolution shows "Auto" and can't be changed; turning
 MetalFX off returns to your own Resolution, which is never overwritten. The
-percentage is saved as `MetalFXScale` in `Config/ReFare.ini`. On smaller
+percentage is saved as `UpscalerScale` in `Config/ReFare.ini`. On smaller
 windows two percentages can land on the same scale (for example 100% and 75%
 both render at 2x in a 1080p-tall game area).
+
+On Android, Windows and Linux the same row offers **AMD FSR 1.0** instead
+(EASU edge-adaptive upscaling, ported from AMD's MIT-licensed FidelityFX
+source), with the same Off / 100% / 75% / 50% choices and automatic render
+scale. ReFare installs it as the post-processing shader `Shaders/FSR1.glsl` in
+the user folder, so it replaces FXAA while it is on (and choosing FXAA turns
+FSR off). Dolphin's post-processing is a single pass, so FSR's separate RCAS
+sharpening pass isn't applied; at 100% FSR barely changes the image, so use
+FXAA there for anti-aliasing.
