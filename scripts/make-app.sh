@@ -22,7 +22,7 @@ for tool in moderngekko-run moderngekko-port dolrecomp; do
   [ -x "$BUILD/$tool" ] || { echo "Missing $BUILD/$tool; run 'make tools' first." >&2; exit 1; }
 done
 [ -d "$BUILD/Sys" ] || { echo "Missing $BUILD/Sys; run 'make tools' first." >&2; exit 1; }
-for cmd in swiftc otool install_name_tool codesign ditto; do
+for cmd in swiftc otool install_name_tool codesign ditto xattr; do
   command -v "$cmd" >/dev/null || { echo "Missing $cmd (Xcode Command Line Tools)." >&2; exit 1; }
 done
 
@@ -30,10 +30,14 @@ echo "Packaging ReFare $VERSION"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 CONTENTS=$APP/Contents
+cp "$ROOT/assets/icons/ReFare.icns" "$CONTENTS/Resources/ReFare.icns"
+cp "$ROOT/assets/branding/ReFareLogo.png" "$CONTENTS/Resources/ReFareLogo.png"
+cp "$ROOT/assets/branding/ReFareUI.ttf" "$CONTENTS/Resources/ReFareUI.ttf"
+cp "$ROOT/assets/branding/NOTICE.txt" "$CONTENTS/Resources/ReFareBranding.txt"
 
 # Launcher.
 swiftc -O -parse-as-library -target arm64-apple-macos13 \
-  "$ROOT/launcher/ReFareLauncher.swift" -o "$CONTENTS/MacOS/ReFare"
+  "$ROOT/launcher/ReFareLauncher.swift" "$ROOT/launcher/ReFareBranding.swift" -o "$CONTENTS/MacOS/ReFare"
 
 # Runtime and recompiler. moderngekko-port finds the other two next to itself.
 for tool in moderngekko-run moderngekko-port dolrecomp; do
@@ -72,6 +76,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>ReFare</string>
   <key>CFBundleIdentifier</key><string>io.github.bittahbandit1.refare</string>
   <key>CFBundleExecutable</key><string>ReFare</string>
+  <key>CFBundleIconFile</key><string>ReFare.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION#v}</string>
   <key>CFBundleVersion</key><string>${VERSION#v}</string>
@@ -157,6 +162,11 @@ for dir in games extracted prepared modules generated; do
 done
 
 # Ad-hoc signatures (inside out): Apple silicon refuses to run unsigned code.
+# Finder metadata can arrive with user-supplied artwork. Strip only the two
+# attributes rejected by codesign, on this newly staged bundle only.
+for attribute in com.apple.FinderInfo com.apple.ResourceFork; do
+  xattr -r -d "$attribute" "$APP" 2>/dev/null || true
+done
 for lib in "$FRAMEWORKS"/*.dylib; do
   [ -e "$lib" ] && codesign --force --sign - --timestamp=none "$lib"
 done

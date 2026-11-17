@@ -1,5 +1,9 @@
 # ReFare 0.2.0
 
+> **Withdrawn downloads:** the 0.2.0 Android APK and iOS IPA embedded a
+> precompiled game module and have been removed. Use 0.2.5 or later, which
+> compile the game on your own device.
+
 ## Mobile gameplay
 
 - Android ARM64 port with on-device ISO/CISO import, Vulkan rendering and AAudio sound.

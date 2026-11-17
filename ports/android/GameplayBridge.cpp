@@ -2,6 +2,11 @@
 #include "moderngekko/module.h"
 #include "dol_patch.hpp"
 #include "refare_options.hpp"
+#include "refare_idle_loop.hpp"
+#include "Common/Config/Config.h"
+#include "Core/Config/StaticRecompSettings.h"
+#include "Core/Config/GraphicsSettings.h"
+#include "VideoCommon/VideoConfig.h"
 #include "refare_runtime_services.hpp"
 #include "Common/FileUtil.h"
 #include "Common/HookableEvent.h"
@@ -24,7 +29,6 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
-extern "C" const ModernGekkoModuleDesc* staticrecomp_get_module();
 namespace {
 std::mutex lock;
 std::jthread worker;
@@ -53,12 +57,20 @@ refare::OptionsInput MenuInput(){
 std::string Text(JNIEnv* env,jstring s){const char* p=env->GetStringUTFChars(s,nullptr);std::string text(p);env->ReleaseStringUTFChars(s,p);return text;}
 }
 #define JNI_METHOD(name) Java_io_github_bittahbandit1_refare_MainActivity_##name
-extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(JNIEnv* env,jclass,jobject surface,jstring game,jstring user,jstring sys,jfloat scale){
+extern "C" JNIEXPORT jstring JNICALL JNI_METHOD(nativePrepareGame)(JNIEnv* env,jclass,jstring game,jstring manifest){
+ try{
+  bool changed=false;std::string error;
+  if(!moderngekko::frontend::ApplyDolPatchManifest(std::filesystem::path(Text(env,game))/"sys/main.dol",Text(env,manifest),&changed,&error))
+   return env->NewStringUTF(error.c_str());
+  return nullptr;
+ }catch(const std::exception& error){return env->NewStringUTF(error.what());}
+}
+extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(JNIEnv* env,jclass,jobject surface,jstring game,jstring user,jstring sys,jstring module,jfloat scale){
  {std::lock_guard guard(lock);if(state==1)return;}
  if(worker.joinable())worker.join();
  auto* window=ANativeWindow_fromSurface(env,surface);
  if(!window)return;
- std::filesystem::path root=Text(env,game),profile=Text(env,user),system=Text(env,sys);
+ std::filesystem::path root=Text(env,game),profile=Text(env,user),system=Text(env,sys),compiled=Text(env,module);
  {std::lock_guard guard(lock);state=1;stopping=false;message="Starting game";}
  frames=0;toggle=false;buttons=0;
  worker=std::jthread([=]{
@@ -74,7 +86,7 @@ extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(JNIEnv* env,jclass,job
    if(!moderngekko::frontend::ApplyDolPatchManifest(root/"sys/main.dol",system.parent_path()/"startup-patches.csv",&changed,&error))throw std::runtime_error(error);
    moderngekko::RuntimeConfig config;
    config.game_root=root;config.user_directory=profile;
-   config.module=moderngekko::ModuleSource::AttachedDescriptor(staticrecomp_get_module());
+   config.module=moderngekko::ModuleSource::DynamicPath(compiled);
    config.native_window=window;config.native_metal_layer=window;config.native_surface_scale=scale;
    config.graphics.backend="Vulkan";config.audio.backend="AAudio";config.show_fps_in_title=false;
    config.input.blocks_input=[] {return refare::OptionsMenuBlocksInput();};
@@ -88,7 +100,17 @@ extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(JNIEnv* env,jclass,job
     frames=info.frame_count;
     if(info.frame_count && info.frame_count%300==0)__android_log_print(ANDROID_LOG_INFO,"ReFare","Presented frame %llu",static_cast<unsigned long long>(info.frame_count));
    });
+   setenv("REFARE_GFX_TRACE_DIR", profile.c_str(), 1);
    refare::ConfigureFramePacing();
+   const auto base = Config::GetLayer(Config::LayerType::Base);
+   if (base && !base->Exists(Config::MAIN_STATICRECOMP_IDLE_PC.GetLocation()) &&
+       refare::HasSchedulerIdleLoop(root/"sys/main.dol")) {
+    Config::SetCurrent(Config::MAIN_STATICRECOMP_IDLE_PC, refare::kSchedulerIdlePC);
+    Log("Verified scheduler idle loop: yielding until next emulated event");
+   }
+   // Test specialized shaders on mobile: the desktop runtime forces hybrid
+   // ubershaders, whose driver-side memory can be costly on Adreno.
+   Config::SetCurrent(Config::GFX_SHADER_COMPILATION_MODE, ShaderCompilationMode::Synchronous);
    auto menu=std::make_unique<refare::OptionsMenu>(profile,MenuInput,nullptr,Stop,[]{return refare::MenuButtonCapture{};});
    auto result=created.runtime->Run();
    menu.reset();present.reset();
@@ -110,10 +132,18 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeMenuOpen)(JNIEnv*,jclass)
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeToggleMenu)(JNIEnv*,jclass){toggle=true;}
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeMenuButtons)(JNIEnv*,jclass,jint mask){buttons=mask;}
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativePointer)(JNIEnv*,jclass,jfloat x,jfloat y,jboolean down){std::lock_guard guard(pointer_lock);if(pointers.size()<256)pointers.push_back({x,y,down!=0});}
-extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeInput)(JNIEnv*,jclass,jint id,jdouble value){
- if(id<0||id>17||!std::isfinite(value))return;
+extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeInput)(JNIEnv* env,jclass,jdoubleArray input){
+ if(!input || env->GetArrayLength(input)!=18)return;
+ jdouble values[18];
+ env->GetDoubleArrayRegion(input,0,18,values);
+ if(env->ExceptionCheck())return;
+ // Publish one coherent controller snapshot with one lock, rather than 18
+ // JNI calls/locks competing with SI polling for each Java input update.
+ const bool blocked=refare::OptionsMenuBlocksInput();
  auto guard=ControllerEmu::EmulatedController::GetStateLock();
- ciface::Touch::SetControlState(0,static_cast<ciface::Touch::ControlID>(id),refare::OptionsMenuBlocksInput()?0:std::clamp(value,-1.0,1.0));
+ for(int id=0;id<18;++id)
+  ciface::Touch::SetControlState(0,static_cast<ciface::Touch::ControlID>(id),
+    blocked || !std::isfinite(values[id]) ? 0 : std::clamp(values[id],-1.0,1.0));
 }
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativePause)(JNIEnv*,jclass,jboolean paused){
  std::lock_guard guard(lock);

@@ -49,6 +49,8 @@ def main():
         if not source.is_file(): raise ValueError('Missing build output: '+str(source))
         shutil.copy2(source,folder/name); binaries.append(folder/name)
     shutil.copytree(build/'Sys',folder/'Sys')
+    shutil.copy2(ROOT/'assets/icons/icon-256.png',folder/'io.github.bittahbandit1.refare.png')
+    shutil.copy2(ROOT/'assets/ReFare.desktop',folder/'io.github.bittahbandit1.refare.desktop')
     shutil.copytree(build/'refare-data',folder/'refare-data',
                     ignore=shutil.ignore_patterns('__pycache__','*.pyc','native-module'))
     (folder/'refare-data/config/frontend.ini').write_text(

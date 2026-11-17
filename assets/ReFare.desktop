@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ReFare
+Comment=Crazy Taxi recompilation
+Exec=ReFare
+Icon=io.github.bittahbandit1.refare
+Terminal=false
+Categories=Game;
+StartupWMClass=io.github.bittahbandit1.refare

@@ -22,3 +22,10 @@ Thumbs.db
 .env
 __pycache__/
 *.pyc
+
+# Game-derived branding sources kept only locally
+assets/branding/font-source.png
+assets/branding/Handjet-Variable.ttf
+assets/branding/Handjet-OFL.txt
+scripts/build-ui-font.py
+scripts/read-font-sheet.swift

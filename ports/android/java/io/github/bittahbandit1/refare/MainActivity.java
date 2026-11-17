@@ -5,6 +5,8 @@ import android.content.*;
 import android.content.pm.ActivityInfo;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.BitmapFactory;
 import android.net.*;
 import android.provider.*;
 import android.view.*;
@@ -16,14 +18,16 @@ import java.util.*;
 public class MainActivity extends Activity implements SurfaceHolder.Callback {
  static {System.loadLibrary("refare");}
  private static Context application;
- private static native void nativeStart(Surface surface,String game,String user,String sys,float scale);
+ private Typeface uiFont;
+ private static native void nativeStart(Surface surface,String game,String user,String sys,String module,float scale);
+ private static native String nativePrepareGame(String game,String manifest);
  private static native void nativeStop();
  private static native void nativePause(boolean pause);
  private static native int nativeState();
  private static native String nativeMessage();
  private static native long nativeFrames();
  private static native boolean nativeMenuOpen();
- private static native void nativeInput(int id,double value);
+ private static native void nativeInput(double[] values);
  private static native void nativeMenuButtons(int mask);
  private static native void nativePointer(float x,float y,boolean down);
  private static native void nativeToggleMenu();
@@ -33,7 +37,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
  private final double[] axes=new double[18];
  private boolean playing=false,busy=false,alive=true,autoPlay=false;
  private TextView status,loading;
- private File library,user,sys;
+ private File library,user,sys,compilerRoot,compiledModule;
+ private String compilerId;
+ private GameCompiler compiler;
  private SurfaceView surface;
  private LinearLayout gameBar;
  private final Runnable hideBar=()->{if(gameBar!=null)gameBar.setVisibility(View.GONE);};
@@ -53,14 +59,23 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
  }};
  @Override public void onCreate(Bundle saved){
   super.onCreate(saved);application=getApplicationContext();getExternalFilesDir(null);
+  uiFont=Typeface.createFromAsset(getAssets(),"ReFareUI.ttf");
   setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
   getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
   immersive();library=new File(getFilesDir(),"GCTE51");user=new File(getFilesDir(),"user");sys=new File(getFilesDir(),"Sys");
   pendingDisc=getIntent().getStringExtra("disc");autoPlay=getIntent().getBooleanExtra("autoplay",false);
   home("Preparing runtime files…");busy=true;
-  new Thread(()->{try{copyAssets("Sys",sys);copyAsset("GFX.ini",new File(getFilesDir(),"GFX.ini"));copyAsset("startup-patches.csv",new File(getFilesDir(),"startup-patches.csv"));
-   runOnUiThread(()->{busy=false;home("Choose your Crazy Taxi USA revision 0 ISO/CISO.");if(pendingDisc!=null){String disc=pendingDisc;pendingDisc=null;importFile(new File(disc));}else if(autoPlay&&ready())play();});
-  }catch(Exception error){runOnUiThread(()->{busy=false;home(error.toString());});}},"ReFare assets").start();
+  new Thread(()->{try{
+   compilerId=readAsset("compiler-id.txt").trim();
+   compilerRoot=new File(getFilesDir(),"compiler/"+compilerId);
+   if(!new File(compilerRoot,"installed").isFile())GameCompiler.install(getAssets().open("compiler.zip"),compilerRoot);
+   File marker=new File(getFilesDir(),"runtime-assets-"+compilerId);
+   if(!marker.isFile()){
+    copyAssets("Sys",sys);copyAsset("GFX.ini",new File(getFilesDir(),"GFX.ini"));copyAsset("startup-patches.csv",new File(getFilesDir(),"startup-patches.csv"));
+    marker.createNewFile();
+   }
+   runOnUiThread(()->{if(!alive)return;busy=false;home(ready()?"Your disc is ready. The game will compile locally before first play.":"Choose your Crazy Taxi USA revision 0 ISO/CISO.");if(pendingDisc!=null){String disc=pendingDisc;pendingDisc=null;importFile(new File(disc));}else if(autoPlay&&ready())play();});
+  }catch(Exception error){runOnUiThread(()->{if(!alive)return;busy=false;home(error.toString());});}},"ReFare assets").start();
   handler.post(tick);
  }
  @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);String disc=intent.getStringExtra("disc");autoPlay=intent.getBooleanExtra("autoplay",false);if(disc!=null)importFile(new File(disc));else if(autoPlay&&ready())play();}
@@ -69,14 +84,23 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
  private void immersive(){getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY|View.SYSTEM_UI_FLAG_FULLSCREEN|View.SYSTEM_UI_FLAG_HIDE_NAVIGATION|View.SYSTEM_UI_FLAG_LAYOUT_STABLE|View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN|View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);}
  private void home(String text){
   handler.removeCallbacks(hideBar);gameBar=null;
-  LinearLayout view=new LinearLayout(this);view.setOrientation(LinearLayout.VERTICAL);view.setGravity(Gravity.CENTER);view.setPadding(32,24,32,24);view.setBackgroundColor(Color.rgb(18,23,30));
-  TextView title=new TextView(this);title.setText("ReFare · Android test");title.setTextSize(28);title.setTextColor(Color.rgb(255,207,32));view.addView(title);
-  status=new TextView(this);status.setText(text);status.setTextColor(Color.WHITE);status.setGravity(Gravity.CENTER);status.setPadding(12,20,12,20);view.addView(status);
+  float density=getResources().getDisplayMetrics().density;
+  LinearLayout outer=new LinearLayout(this);outer.setOrientation(LinearLayout.VERTICAL);outer.setBackgroundColor(Color.rgb(255,204,32));
+  FrameLayout banner=new FrameLayout(this);banner.setBackgroundColor(Color.WHITE);outer.addView(banner,new LinearLayout.LayoutParams(-1,(int)(160*density)));
+  ImageView logo=new ImageView(this);try(InputStream image=getAssets().open("ReFareLogo.png")){logo.setImageBitmap(BitmapFactory.decodeStream(image));}catch(IOException error){android.util.Log.e("ReFare","Missing logo",error);}
+  logo.setScaleType(ImageView.ScaleType.CENTER_CROP);logo.setContentDescription("ReFare");banner.addView(logo,new FrameLayout.LayoutParams((int)(280*density),(int)(140*density),Gravity.CENTER));
+  LinearLayout view=new LinearLayout(this);view.setOrientation(LinearLayout.VERTICAL);view.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL);view.setPadding(32,24,32,24);outer.addView(view,new LinearLayout.LayoutParams(-1,-2));
+  status=new TextView(this);status.setText(text);status.setTextColor(Color.BLACK);status.setGravity(Gravity.CENTER);status.setPadding(12,20,12,20);view.addView(status);
   Button choose=new Button(this);choose.setText("Choose ISO / CISO");choose.setEnabled(!busy);choose.setOnClickListener(v->{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.setType("*/*");intent.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(intent,10);});view.addView(choose);
   Button play=new Button(this);play.setText("Play Crazy Taxi");play.setEnabled(ready()&&!busy);play.setOnClickListener(v->play());view.addView(play);
-  Button logs=new Button(this);logs.setText("View gameplay log");logs.setOnClickListener(v->{try{File f=new File(user,"gameplay.log");RandomAccessFile log=new RandomAccessFile(f,"r");long size=log.length();log.seek(Math.max(0,size-60000));byte[] bytes=new byte[(int)Math.min(60000,size)];log.readFully(bytes);log.close();new AlertDialog.Builder(this).setMessage(new String(bytes,"UTF-8")).setPositiveButton("Close",null).show();}catch(Exception e){status.setText("No gameplay log yet.");}});view.addView(logs);
-  TextView hint=new TextView(this);hint.setText("ARM64 · Vulkan · Controller: L1 options, Start pause\nPersonal compiled module; import your own disc assets.");hint.setTextColor(Color.LTGRAY);hint.setGravity(Gravity.CENTER);hint.setPadding(0,12,0,0);view.addView(hint);
-  setContentView(view);immersive();
+  Button logs=new Button(this);logs.setText("View logs");logs.setOnClickListener(v->new AlertDialog.Builder(this).setItems(new String[]{"Game preparation log","Gameplay log"},(dialog,which)->showLog(new File(user,which==0?"preparation.log":"gameplay.log"))).show());view.addView(logs);
+  if(compiler!=null){Button cancel=new Button(this);cancel.setText("Cancel preparation");cancel.setOnClickListener(v->{compiler.cancel();status.setText("Canceling game preparation…");cancel.setEnabled(false);});view.addView(cancel);}
+  TextView hint=new TextView(this);hint.setText("ARM64 · Vulkan · L1: options · Start: pause\nGame code is generated locally from your own disc before play.");hint.setTextColor(Color.BLACK);hint.setGravity(Gravity.CENTER);hint.setPadding(0,12,0,0);view.addView(hint);
+  applyInstallerFont(outer);ScrollView page=new ScrollView(this);page.setBackgroundColor(Color.rgb(255,204,32));page.setFillViewport(true);page.addView(outer);setContentView(page);immersive();
+ }
+ private void applyInstallerFont(View view){
+  if(view instanceof TextView){TextView text=(TextView)view;text.setTypeface(uiFont);text.setTextSize(view instanceof Button?22:20);if(view instanceof Button){text.setTextColor(Color.WHITE);view.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.rgb(168,17,0)));}}
+  if(view instanceof ViewGroup){ViewGroup group=(ViewGroup)view;for(int i=0;i<group.getChildCount();i++)applyInstallerFont(group.getChildAt(i));}
  }
  private void copyAsset(String name,File destination)throws Exception{destination.getParentFile().mkdirs();try(InputStream input=getAssets().open(name);OutputStream out=new FileOutputStream(destination)){byte[] buffer=new byte[65536];int n;while((n=input.read(buffer))>=0)out.write(buffer,0,n);}}
  private void copyAssets(String path,File destination)throws Exception {String[] children=getAssets().list(path);if(children!=null&&children.length>0){destination.mkdirs();for(String child:children)copyAssets(path+"/"+child,new File(destination,child));}else copyAsset(path,destination);}
@@ -87,20 +111,32 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
   busy=true;home("Importing and verifying disc…");
   new Thread(()->{try{int count=DiscImporter.extract(source,library);android.util.Log.i("ReFare","Imported "+count+" game files");if(source.getParentFile().equals(getCacheDir()))source.delete();runOnUiThread(()->{busy=false;home("Imported and verified "+count+" files.");if(autoPlay)play();});}catch(Exception e){android.util.Log.e("ReFare","Import failed",e);runOnUiThread(()->{busy=false;home(e.toString());});}},"ReFare disc importer").start();
  }
+ private String readAsset(String name)throws Exception{try(InputStream in=getAssets().open(name);ByteArrayOutputStream bytes=new ByteArrayOutputStream()){byte[] buffer=new byte[8192];int n;while((n=in.read(buffer))!=-1)bytes.write(buffer,0,n);return bytes.toString("UTF-8");}}
+ private void showLog(File file){try(RandomAccessFile log=new RandomAccessFile(file,"r")){long size=log.length();log.seek(Math.max(0,size-60000));byte[] bytes=new byte[(int)Math.min(60000,size)];log.readFully(bytes);TextView text=new TextView(this);text.setText(new String(bytes,"UTF-8"));text.setTextIsSelectable(true);text.setPadding(24,16,24,16);ScrollView scroll=new ScrollView(this);scroll.addView(text);new AlertDialog.Builder(this).setTitle(file.getName()).setView(scroll).setPositiveButton("Close",null).show();}catch(Exception error){status.setText("No log available yet.");}}
  private void play(){
-  if(!ready()||busy||playing)return;playing=true;previousFrames=-1;keys.clear();Arrays.fill(axes,0);
+  if(!ready()||busy||playing||compilerRoot==null)return;
+  busy=true;compiler=new GameCompiler(compilerRoot,new File(getApplicationInfo().nativeLibraryDir),new File(getFilesDir(),"modules"),new File(user,"preparation.log"),compilerId);
+  GameCompiler task=compiler;home("Preparing game from your disc…");
+  new Thread(()->{try{
+   String error=nativePrepareGame(library.getAbsolutePath(),new File(getFilesDir(),"startup-patches.csv").getAbsolutePath());if(error!=null)throw new IOException(error);
+   File module=task.prepare(new File(library,"sys/main.dol"),message->runOnUiThread(()->{if(alive&&compiler==task)status.setText(message);}));
+   runOnUiThread(()->{if(!alive)return;compiler=null;busy=false;compiledModule=module;launchGame();});
+  }catch(Exception error){android.util.Log.e("ReFare","Game preparation failed",error);runOnUiThread(()->{if(!alive)return;compiler=null;busy=false;home(error.getMessage());});}},"ReFare game preparation").start();
+ }
+ private void launchGame(){
+  if(!alive||compiledModule==null)return;playing=true;previousFrames=-1;keys.clear();Arrays.fill(axes,0);
   FrameLayout root=new FrameLayout(this);surface=new SurfaceView(this);surface.getHolder().addCallback(this);root.addView(surface,new FrameLayout.LayoutParams(-1,-1));
   surface.setOnTouchListener((v,event)->{if(!nativeMenuOpen())revealBar();if(event.getPointerCount()==3&&event.getActionMasked()==MotionEvent.ACTION_POINTER_DOWN){nativeToggleMenu();return true;}if(nativeMenuOpen())nativePointer(event.getX()/v.getWidth(),event.getY()/v.getHeight(),event.getActionMasked()!=MotionEvent.ACTION_UP&&event.getActionMasked()!=MotionEvent.ACTION_CANCEL);return true;});
   loading=new TextView(this);loading.setText("Starting compiled game…");loading.setTextColor(Color.WHITE);loading.setTextSize(20);loading.setGravity(Gravity.CENTER);root.addView(loading,new FrameLayout.LayoutParams(-1,-1));
   LinearLayout top=new LinearLayout(this);Button options=new Button(this);options.setText("Options");options.setOnClickListener(v->nativeToggleMenu());top.addView(options);Button exit=new Button(this);exit.setText("Exit");exit.setOnClickListener(v->new AlertDialog.Builder(this).setMessage("Are you sure?").setNegativeButton("No",null).setPositiveButton("Yes",(dialog,which)->nativeStop()).show());top.addView(exit);root.addView(top,new FrameLayout.LayoutParams(-2,-2,Gravity.TOP|Gravity.LEFT));setContentView(root);gameBar=top;revealBar();immersive();
  }
- public void surfaceCreated(SurfaceHolder holder){nativeStart(holder.getSurface(),library.getAbsolutePath(),user.getAbsolutePath(),sys.getAbsolutePath(),getResources().getDisplayMetrics().density);}
+ public void surfaceCreated(SurfaceHolder holder){nativeStart(holder.getSurface(),library.getAbsolutePath(),user.getAbsolutePath(),sys.getAbsolutePath(),compiledModule.getAbsolutePath(),getResources().getDisplayMetrics().density);}
  public void surfaceChanged(SurfaceHolder holder,int format,int width,int height){nativeResize();}
  public void surfaceDestroyed(SurfaceHolder holder){if(playing)nativeStop();}
- @Override public void onBackPressed(){if(playing)nativeToggleMenu();else super.onBackPressed();}
+ @Override public void onBackPressed(){if(compiler!=null){compiler.cancel();return;}if(playing)nativeToggleMenu();else super.onBackPressed();}
  @Override protected void onPause(){super.onPause();if(playing){Arrays.fill(axes,0);keys.clear();sendInput();nativePause(true);}}
  @Override protected void onResume(){super.onResume();immersive();if(playing)nativePause(false);}
- @Override protected void onDestroy(){alive=false;handler.removeCallbacks(tick);if(playing)nativeStop();super.onDestroy();}
+ @Override protected void onDestroy(){alive=false;handler.removeCallbacks(tick);if(compiler!=null)compiler.cancel();if(playing)nativeStop();super.onDestroy();}
  @Override public boolean dispatchKeyEvent(KeyEvent event){
   if(playing&&isGameKey(event.getKeyCode())){if(gameBar!=null)gameBar.setVisibility(View.GONE);if(event.getAction()==KeyEvent.ACTION_DOWN)keys.add(event.getKeyCode());else if(event.getAction()==KeyEvent.ACTION_UP)keys.remove(event.getKeyCode());sendInput();return true;}return super.dispatchKeyEvent(event);
  }
@@ -134,7 +170,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
   if(held(104)){values[10]=1;values[12]=1;}if(held(105)){values[11]=1;values[13]=1;}
   if(values[12]>.9)values[10]=1;if(values[13]>.9)values[11]=1;
   int mask=0;if(held(102))mask|=1;if(values[6]>0||values[15]>.5)mask|=2;if(values[7]>0||values[15]<-.5)mask|=4;if(values[8]>0||values[14]<-.5)mask|=8;if(values[9]>0||values[14]>.5)mask|=16;if(values[1]>0)mask|=32;if(values[0]>0)mask|=64;
-  nativeMenuButtons(mask);for(int i=0;i<18;i++)nativeInput(i,values[i]);
+  nativeMenuButtons(mask);nativeInput(values);
  }
  // Native filesystem helpers. The importer opens SAF documents through ContentResolver.
  public static int openContent(String uri,String mode){try(ParcelFileDescriptor fd=application.getContentResolver().openFileDescriptor(Uri.parse(uri),mode)){return fd==null?-1:fd.detachFd();}catch(Exception e){return -1;}}

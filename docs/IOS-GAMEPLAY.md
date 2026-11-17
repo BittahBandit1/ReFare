@@ -1,5 +1,8 @@
 # iOS gameplay testing
 
+For the new on-device compiler/export workflow, see [iOS Builder](IOS-BUILDER.md).
+The instructions below describe the older computer-built personal gameplay app.
+
 The personal gameplay target adds **Play Crazy Taxi** to the working importer.
 It keeps the same bundle identifier, so sideloading over the importer should
 preserve the imported disc. If needed, use **Choose Disc Folder…** to import
@@ -33,8 +36,8 @@ Dolphin's Logs. **View Gameplay Log** in the importer shows the latest startup
 log and can copy it for troubleshooting.
 
 The device app and binary target iOS 15.0 minimum. The IPA must be signed by
-your sideloading tool. The 0.2.0 gameplay IPA includes
-game-derived native code. No disc image or extracted game assets are bundled.
+your sideloading tool. Keep this personal IPA private: its executable contains
+game-derived native code. Never publish it. No disc image or extracted game assets are bundled.
 
 Build with your own generated C module inputs:
 

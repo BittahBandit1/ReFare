@@ -1,6 +1,7 @@
 // ReFare's desktop pre-game window. SDL/ImGui keeps the same UI on Windows
 // and Linux; the companion Python service owns preparation and subprocesses.
 #include <SDL3/SDL.h>
+#include "refare_icon.h"
 #include <SDL3/SDL_main.h>
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -262,11 +263,18 @@ bool CenterButton(const char* label, float width = 220, float height = 38) {
   return ImGui::Button(label, {width, height});
 }
 
-void Draw(Service& service, SDL_Window* window, const std::shared_ptr<Dialog>& dialog, bool& show_log) {
+void Draw(Service& service, SDL_Window* window, SDL_Texture* logo, const std::shared_ptr<Dialog>& dialog, bool& show_log) {
   const auto view = service.state.Snapshot();
   ImGui::SetNextWindowPos({0, 0}); ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
   ImGui::Begin("ReFare", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-  ImGui::Dummy({0, 8}); CenterText("ReFare", 2.3f);
+  const auto origin = ImGui::GetWindowPos();
+  ImGui::GetWindowDrawList()->AddRectFilled(origin, {origin.x + ImGui::GetWindowWidth(), origin.y + 160}, IM_COL32(255,255,255,255));
+  if (logo) {
+    const float width = std::min(280.0f, ImGui::GetContentRegionAvail().x);
+    ImGui::SetCursorPos({(ImGui::GetWindowWidth() - width) * .5f, 10});
+    ImGui::Image((ImTextureID)(intptr_t)logo, {width, width * .5f}, {0, .25f}, {1, .75f});
+  }
+  ImGui::SetCursorPosY(180);
 #ifdef _WIN32
   CenterText("Crazy Taxi, recompiled for Windows");
 #elif defined(__linux__)
@@ -380,6 +388,8 @@ int main(int argc, char** argv) {
     else if (arg == "--screenshot" && i + 1 < argc) screenshot = argv[++i];
     else return 2;
   }
+  SDL_SetAppMetadata("ReFare", nullptr, "io.github.bittahbandit1.refare");
+  SDL_SetHint(SDL_HINT_APP_ID, "io.github.bittahbandit1.refare");
   if (!SDL_Init(SDL_INIT_VIDEO)) return 1;
   service.tools = FromUTF8(SDL_GetBasePath());
   service.resources = service.tools / "refare-data";
@@ -402,8 +412,19 @@ int main(int argc, char** argv) {
     height = std::min(height, std::max(360, display.h - 40));
   }
   SDL_Window* window = SDL_CreateWindow("ReFare", width, height, SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_RESIZABLE);
+  if (window) {
+    if (SDL_Surface* icon = SDL_LoadBMP_IO(SDL_IOFromConstMem(refare_icon, sizeof(refare_icon)), true)) {
+      SDL_SetWindowIcon(window, icon);
+      SDL_DestroySurface(icon);
+    }
+  }
   SDL_Renderer* renderer = window ? SDL_CreateRenderer(window, nullptr) : nullptr;
   if (!renderer) { if (window) SDL_DestroyWindow(window); SDL_Quit(); return 1; }
+  SDL_Texture* logo = nullptr;
+  if (SDL_Surface* image = SDL_LoadBMP_IO(SDL_IOFromConstMem(refare_logo, sizeof(refare_logo)), true)) {
+    logo = SDL_CreateTextureFromSurface(renderer, image);
+    SDL_DestroySurface(image);
+  }
   SDL_SetWindowMinimumSize(window, std::min(width,480), std::min(height,440));
   SDL_SetRenderVSync(renderer, 1);
   IMGUI_CHECKVERSION(); ImGui::CreateContext();
@@ -419,22 +440,29 @@ int main(int argc, char** argv) {
 #else
   fonts = {"/System/Library/Fonts/Supplemental/Arial.ttf"};
 #endif
+  fonts.insert(fonts.begin(), service.resources / "ReFareUI.ttf");
   fonts.push_back(service.tools / "Sys/Resources/OSD_Font.ttf");
   for (const auto& font : fonts) {
     std::error_code error;
     if (fs::is_regular_file(font, error) &&
-        ImGui::GetIO().Fonts->AddFontFromFileTTF(Text(font).c_str(), 17.0f)) break;
+        ImGui::GetIO().Fonts->AddFontFromFileTTF(Text(font).c_str(), 22.0f)) break;
   }
-  ImGui::StyleColorsDark();
+  ImGui::StyleColorsLight();
   auto& style = ImGui::GetStyle();
+  style.WindowBorderSize = 0;
   style.WindowPadding = {22, 18}; style.ItemSpacing = {10, 10};
   style.FramePadding = {12, 8}; style.FrameRounding = 7; style.ChildRounding = 12;
-  style.Colors[ImGuiCol_Button] = {0.74f, 0.43f, 0.06f, 1};
-  style.Colors[ImGuiCol_ButtonHovered] = {0.93f, 0.59f, 0.09f, 1};
-  style.Colors[ImGuiCol_ButtonActive] = {0.61f, 0.34f, 0.04f, 1};
-  style.Colors[ImGuiCol_Header] = {0.18f, 0.17f, 0.15f, 1};
-  style.Colors[ImGuiCol_HeaderHovered] = {0.28f, 0.23f, 0.15f, 1};
-  style.Colors[ImGuiCol_HeaderActive] = {0.36f, 0.27f, 0.13f, 1};
+  style.Colors[ImGuiCol_WindowBg] = {1, .8f, 32.0f/255, 1};
+  style.Colors[ImGuiCol_ChildBg] = {1, .8f, 32.0f/255, 1};
+  style.Colors[ImGuiCol_PopupBg] = {1, .87f, .4f, 1};
+  style.Colors[ImGuiCol_Text] = {0, 0, 0, 1};
+  style.Colors[ImGuiCol_TextDisabled] = {0, 0, 0, 1};
+  style.Colors[ImGuiCol_Button] = {1, .9f, .55f, 1};
+  style.Colors[ImGuiCol_ButtonHovered] = {1, .95f, .75f, 1};
+  style.Colors[ImGuiCol_ButtonActive] = {.94f, .64f, .1f, 1};
+  style.Colors[ImGuiCol_Header] = {1, .87f, .4f, 1};
+  style.Colors[ImGuiCol_HeaderHovered] = {1, .92f, .6f, 1};
+  style.Colors[ImGuiCol_HeaderActive] = {.94f, .64f, .1f, 1};
   ImGui_ImplSDL3_InitForSDLRenderer(window, renderer); ImGui_ImplSDLRenderer3_Init(renderer);
   auto dialog = std::make_shared<Dialog>();
   if (smoke && !probe) service.state.Set(Phase::Disc, ""); else service.Start("status");
@@ -464,9 +492,9 @@ int main(int argc, char** argv) {
       if (dialog->error) { service.state.Set(Phase::Failed, *dialog->error); dialog->error.reset(); }
     }
     ImGui_ImplSDLRenderer3_NewFrame(); ImGui_ImplSDL3_NewFrame(); ImGui::NewFrame();
-    Draw(service, window, dialog, show_log);
+    Draw(service, window, logo, dialog, show_log);
     ImGui::Render();
-    SDL_SetRenderDrawColor(renderer, 24, 24, 26, 255); SDL_RenderClear(renderer);
+    SDL_SetRenderDrawColor(renderer, 255, 204, 32, 255); SDL_RenderClear(renderer);
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
     if (smoke && (!probe || !service.state.busy.load()) && ++frames == 4) {
       result = ImGui::GetDrawData()->TotalVtxCount > 0 ? 0 : 1;
@@ -483,6 +511,7 @@ int main(int argc, char** argv) {
   }
   if (service.worker.joinable()) service.worker.join();
   ImGui_ImplSDLRenderer3_Shutdown(); ImGui_ImplSDL3_Shutdown(); ImGui::DestroyContext();
+  if (logo) SDL_DestroyTexture(logo);
   SDL_DestroyRenderer(renderer); SDL_DestroyWindow(window); SDL_Quit();
   return result;
 }

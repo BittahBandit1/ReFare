@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def run(*args):
     subprocess.run([str(arg) for arg in args], cwd=ROOT, check=True)
 
-def package_ipa(build, gameplay=False):
+def package_ipa(build, gameplay=False, label=None):
     app = build / ('refare-ios/ReFareImport.app' if gameplay else 'Release-iphoneos/ReFareImport.app')
     if not (app / 'ReFareImport').is_file():
         raise ValueError('The device app was not built; cannot package an IPA')
@@ -58,7 +58,10 @@ def package_ipa(build, gameplay=False):
     version = info['CFBundleShortVersionString']
     if not re.fullmatch(r'\d+(?:\.\d+){0,2}', version):
         raise ValueError('Invalid app version for IPA filename')
-    output = ROOT / 'build/release' / f'ReFare-{"Gameplay" if gameplay else "Import"}-{version}-iOS15-arm64-unsigned.ipa'
+    kind = label or ('Gameplay' if gameplay else 'Import')
+    if kind not in ('Gameplay', 'Import', 'Builder'):
+        raise ValueError('Unknown IPA target')
+    output = ROOT / 'build/release' / f'ReFare-{kind}-{version}-iOS15-arm64-unsigned.ipa'
     output.parent.mkdir(parents=True, exist_ok=True)
     pending = output.with_suffix('.ipa.tmp')
     with zipfile.ZipFile(pending, 'w', zipfile.ZIP_DEFLATED) as archive:
@@ -69,6 +72,7 @@ def package_ipa(build, gameplay=False):
                 archive.write(file, str(Path('Payload') / app.name / file.relative_to(app)))
     pending.replace(output)
     print(f'IPA: {output}\nThis unsigned testing IPA must be signed by your sideloading tool.')
+    return output
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

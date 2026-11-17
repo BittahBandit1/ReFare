@@ -152,7 +152,7 @@ int main(int argc, char** argv) {
     tap(refare::Down); tap(refare::Right);
     Check(!refare::LoadMetalHUDPreference(directory),"Metal HUD Off was not saved");
     tap(refare::Back); tap(refare::Toggle);
-    tap(refare::Up); tap(refare::Up); tap(refare::Up); // Past Exit and Menu button to Metal HUD.
+    tap(refare::Up); tap(refare::Up); tap(refare::Up); tap(refare::Up); // Past Exit, Menu button and FPS counter to Metal HUD.
     tap(refare::Left);
     Check(refare::LoadMetalHUDPreference(directory),"Metal HUD On was not saved after reopening");
     tap(refare::Right);
@@ -186,6 +186,19 @@ int main(int argc, char** argv) {
     int interp_target=0;
     graphics.GetOrCreateSection("Enhancements")->Get("RefareInterpolationTarget",&interp_target);
     Check(interp_target==90,"Interpolation rate was not saved");
+    // Counter cycles and persists without disturbing other frontend choices.
+    tap(refare::Toggle); tap(refare::Up); tap(refare::Up); tap(refare::Up);
+    tap(refare::Confirm);
+    Common::IniFile counter;
+    counter.Load((directory/"Config/ReFare.ini").string());
+    int counter_mode = 0;
+    counter.GetOrCreateSection("Video")->Get("FPSCounter", &counter_mode, 0);
+    Check(counter_mode==1,"FPS counter did not persist On");
+    tap(refare::Left);
+    counter.Load((directory/"Config/ReFare.ini").string());
+    counter.GetOrCreateSection("Video")->Get("FPSCounter", &counter_mode, -1);
+    Check(counter_mode==0,"FPS counter did not persist Off");
+    tap(refare::Back);
     // Exit The Game: last row, needs explicit confirmation, No is the default.
     tap(refare::Toggle); tap(refare::Up);
     tap(refare::Right); tap(refare::Left);

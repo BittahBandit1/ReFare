@@ -1,4 +1,5 @@
 #include "refare_options.hpp"
+#include "refare_perf_overlay.hpp"
 #include "refare_metal_hud.hpp"
 #include "refare_runtime_services.hpp"
 #include "Common/Config/Config.h"
@@ -44,7 +45,7 @@ constexpr std::array<InterpChoice,6> kInterpChoices = {{
   {"Off",false,0},{"Match display",true,0},{"90 FPS",true,90},
   {"120 FPS",true,120},{"144 FPS",true,144},{"180 FPS",true,180}}};
 
-enum class Row { Scale, Aspect, HudLayout, FXAA, MetalFX, Interpolation, VSync, MetalHUD, MenuButton, Exit };
+enum class Row { Scale, Aspect, HudLayout, FXAA, MetalFX, Interpolation, VSync, MetalHUD, PerfOverlay, MenuButton, Exit };
 const std::vector<Row>& Rows() {
   static const std::vector<Row> rows = {Row::Scale, Row::Aspect, Row::HudLayout, Row::FXAA,
 #ifdef __APPLE__
@@ -57,6 +58,7 @@ const std::vector<Row>& Rows() {
 #ifdef __APPLE__
     Row::MetalHUD,
 #endif
+    Row::PerfOverlay,
 #if !defined(REFARE_IOS) && !defined(REFARE_ANDROID)
     Row::MenuButton,
 #endif
@@ -74,6 +76,7 @@ const char* RowLabel(Row row) {
   case Row::VSync: return "V-Sync";
   case Row::MetalHUD: return "Metal HUD";
   case Row::MenuButton: return "Options menu button";
+  case Row::PerfOverlay: return "FPS counter";
   case Row::Exit: return "Exit The Game";
   }
   return "";
@@ -180,6 +183,9 @@ Buttons ReadButtons() {
 struct OptionsMenu::Impl {
   std::filesystem::path directory;
   Common::EventHook draw_hook;
+  Common::EventHook present_hook;
+  perf::FrameIntervals intervals;
+  int perf_overlay = 0;
   FramePacingRecorder pacing_recorder;
   std::function<OptionsInput()> input_source;
   std::function<void()> request_exit;
@@ -214,9 +220,15 @@ struct OptionsMenu::Impl {
         metal_hud(LoadMetalHUDPreference(directory)) {
     s_menu_binding = LoadMenuButtonBinding(directory);
     binding = s_menu_binding;
+    Common::IniFile frontend;
+    frontend.Load((directory / "Config" / "ReFare.ini").string());
+    frontend.GetOrCreateSection("Video")->Get("FPSCounter", &perf_overlay, 0);
+    perf_overlay = std::clamp(perf_overlay, 0, 2);
+    present_hook = GetVideoEvents().after_present_event.Register(
+        [this](const PresentInfo& info) { intervals.Record(info); });
     draw_hook = GetVideoEvents().imgui_draw_event.Register([this] { Draw(); });
   }
-  ~Impl() { draw_hook.reset(); s_blocks_input = false; }
+  ~Impl() { present_hook.reset(); draw_hook.reset(); s_blocks_input = false; }
   Row CurrentRow() const { return Rows()[selected]; }
   void ReadSettings() {
     metal_hud = LoadMetalHUDPreference(directory);
@@ -384,6 +396,17 @@ struct OptionsMenu::Impl {
         binding = MenuButtonBinding{}; SaveMenuButton();
       }
       break;
+    case Row::PerfOverlay: {
+      perf_overlay = (perf_overlay + delta + 3) % 3;
+      Common::IniFile ini;
+      const auto file = (directory / "Config" / "ReFare.ini").string();
+      ini.Load(file);
+      ini.GetOrCreateSection("Video")->Set("FPSCounter", perf_overlay);
+      std::error_code ec;
+      std::filesystem::create_directories(directory / "Config", ec);
+      save_error = (!ec && ini.Save(file)) ? "" : "Could not save FPS counter setting.";
+      break;
+    }
     case Row::Exit: break;  // Needs an explicit confirm, never a D-pad nudge.
     }
   }
@@ -391,7 +414,7 @@ struct OptionsMenu::Impl {
     switch (CurrentRow()) {
     case Row::Exit: confirm_exit = true; exit_choice = 0; break;
     case Row::MenuButton: StartCapture(); break;
-    case Row::HudLayout: case Row::FXAA: case Row::MetalFX: case Row::Interpolation: case Row::VSync: case Row::MetalHUD: Step(1); break;
+    case Row::HudLayout: case Row::FXAA: case Row::MetalFX: case Row::Interpolation: case Row::VSync: case Row::MetalHUD: case Row::PerfOverlay: Step(1); break;
     default: break;
     }
   }
@@ -430,6 +453,7 @@ struct OptionsMenu::Impl {
       if (capturing) return "Press a button or key...";
       binding_text = PadLabel(binding.pad) + " / " + binding.key;
       return binding_text.c_str();
+    case Row::PerfOverlay: return perf::kPerfLabels[perf_overlay];
     case Row::Exit: return "";
     }
     return "";
@@ -514,6 +538,7 @@ struct OptionsMenu::Impl {
     else if (open) HandleInput(pressed);
     if (drain && std::none_of(down.begin(), down.end(), [](bool b){return b;})) drain = false;
     s_blocks_input = open || drain;
+    if (perf_overlay) perf::DrawPerfOverlay(intervals, perf_overlay);
     if (!open) return;
     const auto& io = ImGui::GetIO();
 #if defined(REFARE_IOS) || defined(REFARE_ANDROID)

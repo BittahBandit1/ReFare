@@ -1,0 +1,19 @@
+{
+  "background_rgb": [
+    255,
+    204,
+    32
+  ],
+  "font": "ReFareUI",
+  "text_rgb": [
+    0,
+    0,
+    0
+  ],
+  "header_background_rgb": [
+    255,
+    255,
+    255
+  ],
+  "launcher_logo": "ReFareLogo.png"
+}

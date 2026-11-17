@@ -5,6 +5,14 @@
   <key>CFBundleIdentifier</key><string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
   <key>CFBundleName</key><string>ReFare Import</string>
   <key>CFBundleDisplayName</key><string>ReFare Import</string>
+  <key>CFBundleIcons</key><dict><key>CFBundlePrimaryIcon</key><dict>
+    <key>CFBundleIconFiles</key><array><string>icon-120</string><string>icon-180</string></array>
+    <key>UIPrerenderedIcon</key><true/>
+  </dict></dict>
+  <key>CFBundleIcons~ipad</key><dict><key>CFBundlePrimaryIcon</key><dict>
+    <key>CFBundleIconFiles</key><array><string>icon-76</string><string>icon-152</string><string>icon-167</string></array>
+    <key>UIPrerenderedIcon</key><true/>
+  </dict></dict>
   <key>MinimumOSVersion</key><string>15.0</string>
   <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
   <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
@@ -15,6 +23,8 @@
   <key>CFBundleShortVersionString</key><string>0.2.0</string>
   <key>CFBundleVersion</key><string>13</string>
   <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+  <key>UIFileSharingEnabled</key><true/>
+  <key>UIAppFonts</key><array><string>ReFareUI.ttf</string></array>
   <key>CFBundleDocumentTypes</key><array><dict>
     <key>CFBundleTypeName</key><string>GameCube disc image</string>
     <key>CFBundleTypeRole</key><string>Viewer</string>

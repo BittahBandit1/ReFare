@@ -8,6 +8,8 @@ Crazy Taxi (GameCube) static recompilation project using
 macOS ARM64 is the first target. Windows x86-64, Linux x86-64/ARM64, iOS and Android ARM64
 port development is documented in [the port build guide](docs/PORTS.md).
 The Android controller-handheld test build is described in [Android testing](docs/ANDROID.md).
+The experimental [iOS builder](docs/IOS-BUILDER.md) compiles an imported disc on
+the device and exports a separate personal IPA for signing and installation.
 The new platforms are not yet validated releases. Thorough testing of arcade rounds has been done, and play at full
 speed on an M3 Pro MacBook Pro with GPU headroom to spare. Testing has not 
 been done on lower end hardware at this time. 
@@ -20,11 +22,11 @@ Features:
 - Preserved HUD art (Centered by default; Stretched is optional)
 - Touch Controls (experimental)
 
-**You need your own NTSC-U copy of the game.** The source tree contains no game code or disc
-assets. Mobile gameplay release binaries include a precompiled game module;
-you must import the disc assets from your own copy. It translates the `main.dol` from your own legally obtained Crazy Taxi
-(USA, GCTE51) disc image and loads the rest of the game's files from it at run
-time.
+**You need your own NTSC-U copy of the game.** ReFare contains no game code, data or
+assets, in the source or in any release download. The macOS and Android apps
+translate the `main.dol` from your own legally obtained Crazy Taxi (USA, GCTE51)
+disc image on your own device, and load the rest of the game's files from it at
+run time.
 
 To facilitate faster loading, the beginning copyright screen and the Acclaim animated video were removed.
 
@@ -144,7 +146,7 @@ at the title screen and during play; no game-state addresses are assumed.
 Both buttons can be changed from the menu itself (see **Options menu button** below).
 
 - D-pad up/down selects resolution scale, aspect ratio, HUD and menus
-  (Centered/Stretched), FXAA, MetalFX spatial upscaling (supported Apple devices), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS),
+  (Centered/Stretched), FXAA, MetalFX spatial upscaling (supported Apple devices), Interpolation (experimental: Off, Match display, 90–180 FPS), V-Sync, Metal HUD (macOS), FPS counter (Off, On, or On + frame times),
   options menu button, or Exit The Game.
 - D-pad left/right changes the selected setting; Cross/Enter toggles or selects.
 - **Options menu button**: press Cross/Enter (or click Change), then press the

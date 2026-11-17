@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.25)
+project(ReFareBuilderNativeTest LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+get_filename_component(REFARE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+find_package(LLVM 20.1.8 EXACT CONFIG REQUIRED)
+find_package(Clang CONFIG REQUIRED)
+find_package(LLD CONFIG REQUIRED)
+add_subdirectory("${REFARE_ROOT}/lib/ModernGekko/vendor/dolphin/DolRecomp" dolrecomp EXCLUDE_FROM_ALL)
+add_library(builder_entry STATIC "${REFARE_ROOT}/lib/ModernGekko/vendor/dolphin/DolRecomp/src/app/main.c")
+target_compile_definitions(builder_entry PRIVATE main=refare_dolrecomp_main)
+target_link_libraries(builder_entry PUBLIC dr_app)
+add_library(builder-host SHARED "${REFARE_ROOT}/ports/ios/BuilderBridge.cpp"
+  "${REFARE_ROOT}/lib/ModernGekko/tools/dol_patch.cpp")
+target_include_directories(builder-host PRIVATE ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS}
+  "${REFARE_LLVM_SOURCE}/lld/include" "${REFARE_ROOT}/ports/ios" "${REFARE_ROOT}/lib/ModernGekko/tools")
+target_link_libraries(builder-host PRIVATE builder_entry clangCodeGen clangFrontend clangDriver
+  LLVM lldMachO)
+add_executable(builder-native main.cpp)
+target_include_directories(builder-native PRIVATE "${REFARE_ROOT}/ports/ios")
+target_link_libraries(builder-native PRIVATE builder-host)

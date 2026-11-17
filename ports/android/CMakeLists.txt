@@ -5,7 +5,7 @@ if(NOT ANDROID)
 endif()
 set(REFARE_ANDROID ON CACHE BOOL "ReFare native Android host" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(MODERNGEKKO_ENABLE_DYNAMIC_MODULES OFF CACHE BOOL "" FORCE)
+set(MODERNGEKKO_ENABLE_DYNAMIC_MODULES ON CACHE BOOL "" FORCE)
 set(ENABLE_VULKAN ON CACHE BOOL "" FORCE)
 set(ENABLE_SDL OFF CACHE BOOL "" FORCE)
 set(USE_SYSTEM_LIBS OFF CACHE STRING "" FORCE)
@@ -20,11 +20,6 @@ add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../lib/ModernGekko" moderngekko
 target_link_libraries(androidcommon PRIVATE common fmt::fmt)
 # NDK r27 ships stop_token/jthread in its experimental C++20 library.
 target_compile_definitions(moderngekko PRIVATE _LIBCPP_ENABLE_EXPERIMENTAL)
-set(GAME_ID GCTE51 CACHE STRING "" FORCE)
-set(GENERATED_DIR "${REFARE_ANDROID_GENERATED_DIR}" CACHE PATH "" FORCE)
-set(RECOMPCORE_MODULE_STATIC ON CACHE BOOL "" FORCE)
-set(RECOMPCORE_MODULE_ENABLE_IPO OFF CACHE BOOL "" FORCE)
-add_subdirectory("${DOLPHIN}/module-template" game-module)
 add_library(refare SHARED GameplayBridge.cpp AAudioStream.cpp
  "${CMAKE_CURRENT_SOURCE_DIR}/../../lib/ModernGekko/tools/dol_patch.cpp"
  "${CMAKE_CURRENT_SOURCE_DIR}/../../src/refare_options.cpp"
@@ -33,4 +28,4 @@ target_compile_features(refare PRIVATE cxx_std_23)
 target_compile_definitions(refare PRIVATE _LIBCPP_ENABLE_EXPERIMENTAL REFARE_ANDROID=1)
 target_include_directories(refare PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../src"
  "${CMAKE_CURRENT_SOURCE_DIR}/../../lib/ModernGekko/tools" "${DOLPHIN}/Source/Core" "${DOLPHIN}/Source/Android")
-target_link_libraries(refare PRIVATE ModernGekko::Runtime core imgui gGCTE51_recomp aaudio android log c++experimental)
+target_link_libraries(refare PRIVATE ModernGekko::Runtime core imgui aaudio android log c++experimental)

@@ -358,11 +358,11 @@ struct ContentView: View {
 
   var body: some View {
     VStack(spacing: 18) {
-      VStack(spacing: 4) {
-        Text("ReFare").font(.system(size: 34, weight: .heavy, design: .rounded))
-        Text("Crazy Taxi, recompiled for Mac").foregroundStyle(.secondary)
+      VStack(spacing: 16) {
+        ReFareBranding.logoBar.padding(.horizontal, -22)
+        Text("Crazy Taxi, recompiled for Mac").foregroundStyle(ReFareBranding.ink)
       }
-      .padding(.top, 8)
+      .padding(.top, -22)
 
       main
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -380,10 +380,15 @@ struct ContentView: View {
           .onChange(of: model.log.count) { _ in proxy.scrollTo("end", anchor: .bottom) }
         }
       }
-      .font(.callout)
+      .font(ReFareBranding.font(18))
     }
     .padding(22)
-    .frame(width: 520, height: 440)
+    .frame(width: 580, height: 520)
+    .font(ReFareBranding.font(22))
+    .foregroundStyle(ReFareBranding.ink)
+    .tint(ReFareBranding.red)
+    .background(ReFareBranding.yellow)
+    .preferredColorScheme(.light)
     .dropDestination(for: URL.self) { urls, _ in
       guard let url = urls.first else { return false }
       model.accept(url)
@@ -403,7 +408,7 @@ struct ContentView: View {
     case .ready:
       VStack(spacing: 14) {
         Button(action: model.play) {
-          Text("Play").font(.title2.weight(.bold)).frame(width: 180, height: 36)
+          Text("Play").font(ReFareBranding.font(28)).frame(width: 180, height: 36)
         }
         .buttonStyle(.borderedProminent)
         .keyboardShortcut(.defaultAction)
@@ -412,13 +417,13 @@ struct ContentView: View {
           Button("Show game files", action: model.revealFiles)
         }
         .buttonStyle(.link)
-        .font(.callout)
+        .font(ReFareBranding.font(20))
       }
     case .playing:
       VStack(spacing: 10) {
         ProgressView()
         Text("Crazy Taxi is running. Quit the game to come back here.")
-          .foregroundStyle(.secondary)
+          .foregroundStyle(ReFareBranding.ink)
       }
     case .failed(let message):
       VStack(spacing: 12) {
@@ -433,11 +438,11 @@ struct ContentView: View {
 
   private var dropZone: some View {
     VStack(spacing: 12) {
-      Image(systemName: "opticaldisc").font(.system(size: 44)).foregroundStyle(.secondary)
+      Image(systemName: "opticaldisc").font(.system(size: 44)).foregroundStyle(ReFareBranding.ink)
       Text("Drop your Crazy Taxi (USA) disc image here")
-        .font(.headline)
+        .font(ReFareBranding.font(24))
       Text(".iso or .ciso of the GameCube disc (GCTE51)")
-        .font(.callout).foregroundStyle(.secondary)
+        .font(ReFareBranding.font(20)).foregroundStyle(ReFareBranding.ink)
       Button("Choose File…", action: model.chooseDisc)
         .padding(.top, 4)
     }
@@ -482,6 +487,7 @@ struct ContentView: View {
 
 @main
 struct ReFareLauncherApp: App {
+  init() { ReFareBranding.registerFont() }
   @StateObject private var model = LauncherModel()
 
   var body: some Scene {

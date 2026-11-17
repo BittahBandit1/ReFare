@@ -1,8 +1,10 @@
 # Android ARM64 personal test port
 
 The Android host uses a Java document picker and bounded ISO/CISO importer,
-Vulkan rendering, native AAudio output and Android gamepad events. It links a
-personal compiled game module into the APK; gameplay does not require JIT.
+Vulkan rendering, native AAudio output and Android gamepad events. The new
+0.2.5 build generates and compiles a personal game module on the device
+before play; gameplay does not require JIT. The APK bundles a generic compiler,
+linker and runtime, without a precompiled Crazy Taxi module.
 Android 8.0 (API 26) or later and an ARM64 Vulkan-capable device are required.
 Only Crazy Taxi USA GCTE51 revision 0 is accepted. Disc assets are imported on
 the device, kept in private app storage, and never included in the APK.
@@ -19,22 +21,34 @@ render surface stops the session and returns to the library.
 
 Install Java 21, CMake, Ninja and Google's Android SDK/NDK. The script expects
 SDK platform 35, build-tools 35.0.0 and NDK 27.3.13750724 below `--sdk`.
-Generate portable C game code from your personal disc first, then run:
+Build the generic APK (no disc or generated game code is needed):
 
 ```sh
-python3 scripts/android.py --sdk build/android-sdk --generated /path/to/dolrecomp-output/generated
+python3 scripts/android.py --sdk build/android-sdk
 ```
 
 Output: `build/release/ReFare-Android-arm64-test.apk`. It is signed with a local
-ignored debug keystore for USB installation. The generated module is compiled into the app. The 0.2.0 gameplay release
-includes this module; disc images and extracted game assets are not packaged.
+ignored debug keystore for USB installation. The generic compiler packages are
+downloaded from official Termux servers and verified against pinned SHA-256
+hashes in `ports/android/compiler-packages.json`. Compiler licenses and NDK
+notices are bundled in the APK. The roughly 77 MiB APK is larger because it
+includes Clang/LLVM and LLD.
 
 ```sh
 adb install -r build/release/ReFare-Android-arm64-test.apk
 ```
 
 Launch ReFare, choose an ISO/CISO using Android's file picker, then Play.
-The View gameplay log button shows the most recent runtime diagnostics.
+The first preparation generates C code, compiles it and links the game module
+in private app storage. Keep the app open; this can take many minutes on a
+handheld. Cancel or Back stops preparation. Later launches reuse the module
+after checking the disc, toolchain identity and module SHA-256. Changing the
+disc or compiler invalidates the cache. Preparation logs are available in the
+app alongside gameplay diagnostics. Personal modules and imported assets stay
+on the device; do not distribute them.
+
+The 0.2.0 APK used an older approach that embedded a precompiled game module; it
+has been withdrawn. These instructions describe the local-compilation build.
 
 ## Apple graphics options
 
@@ -76,3 +90,39 @@ Android reports its physical D-pad as joystick HAT_X/HAT_Y. Injected matching
 hat events verified all four directions in the L1 menu, changing and restoring
 aspect ratio, and Up/Down movement in the game menu (Arcade to Original and
 back). Returning the hat to neutral stopped navigation.
+
+## Local compilation validation (November 16, 2026)
+
+The new generic APK was installed on a Retroid Pocket 5 (Snapdragon 865,
+Android 13). It imported the personal CISO, generated 56 C chunks, compiled
+all 63 translation units locally with bundled Clang, linked the module and
+loaded it through the runtime's dynamic module path. The first preparation
+took about 28 minutes. The title screen, 3D attract scene, game menus and
+non-silent 48 kHz audio were observed. Injected held Start/A/B button events
+navigated the game menus. This is not a physical controller feel assessment.
+
+Reinstalling the updated generic APK retained the import/module and reopened
+the game without invoking the compiler again. A fresh compilation was then
+canceled with Back: staging was removed and compiler processes stopped. The
+completed module was restored and the app left at its library. The tested
+firmware reports permissive SELinux, so this does not establish compatibility
+with every stock/enforcing Android configuration. Startup and shader-loading
+pauses remain noticeable even after the game module is cached.
+
+### FPS counter and frame pacing diagnostics
+
+The L1 menu includes Turbulence's FPS counter: Off, On, and On + frame times.
+The expanded view shows game FPS, emulation speed, the active backend, VPS,
+and a graph of intervals between new frames. Duplicate presentations do not
+inflate the graph's frame count. The preference is saved as `[Video] FPSCounter`
+in `user/Config/ReFare.ini` (0, 1, or 2). It defaults to Off.
+
+Android sends each controller snapshot in one JNI call under one state lock,
+instead of taking the game input lock separately for all 18 controls. Menu
+input blocking, D-pad mapping, analog values and release behavior are retained.
+
+For an explicit diagnostic capture, create `user/pacing-request` in the app's
+private files directory. The next 600 presentation events are recorded as
+`user/pacing-N.csv`. Captures are opt-in; no continuous trace file is written.
+The frame-time overlay reports renderer callback intervals; use Android
+SurfaceFlinger presentation timestamps when measuring actual screen delivery.

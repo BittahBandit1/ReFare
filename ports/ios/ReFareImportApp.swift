@@ -1,11 +1,10 @@
 import SwiftUI
 import UIKit
 
-// This target validates the native import path. It is deliberately named
-// ReFare Import until the game runtime can launch on iOS.
 @main
 struct ReFareImportApp: App {
     init() {
+        ReFareBranding.registerFont()
 #if REFARE_GAMEPLAY
         // Initialize HUD support before the first Metal device is created.
         setenv("MTL_HUD_ENABLED", "1", 0)
@@ -21,6 +20,7 @@ struct ImportView: View {
     @State private var playing = false
     @State private var choosing = false
     @State private var importing = false
+    @State private var building = false
     @State private var choosingFolder = false
     @State private var folder: URL?
     @State private var folderAccess = false
@@ -30,18 +30,17 @@ struct ImportView: View {
     var body: some View {
         NavigationView {
             ScrollView { VStack(spacing: 24) {
-                Image(systemName: "externaldrive").font(.system(size: 56))
-                Text("ReFare Import").font(.largeTitle.bold())
+                ReFareBranding.logoBar.padding(.horizontal, -32).padding(.top, -32)
                 Text(message).multilineTextAlignment(.center).accessibilityIdentifier("importStatus")
                 if importing { ProgressView("Importing…") }
                 Button("Choose Disc…") { choosing = true }
-                    .buttonStyle(.borderedProminent).disabled(importing)
+                    .buttonStyle(.borderedProminent).disabled(importing || building)
                 Button("Choose Disc Folder…") { choosingFolder = true }
-                    .disabled(importing)
+                    .disabled(importing || building)
                 Text("If a disc cannot be selected in Files, choose its folder instead, then select the disc below.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(ReFareBranding.font(17)).foregroundStyle(ReFareBranding.ink)
                 ForEach(discs, id: \.self) { disc in
-                    Button(disc.lastPathComponent) { startImport(disc) }.disabled(importing)
+                    Button(disc.lastPathComponent) { startImport(disc) }.disabled(importing || building)
                 }
 #if REFARE_GAMEPLAY
                 Button("Play Crazy Taxi") { playing = true }
@@ -50,13 +49,17 @@ struct ImportView: View {
                     gameplayLog = readGameplayLog()
                     showingLog = true
                 }
+#elseif REFARE_BUILDER
+                BuilderView(gameAvailable: hasGame, importing: importing, building: $building)
 #else
                 Text("Gameplay is not included in this import-only build.").font(.footnote)
 #endif
-                Text("Build 0.4.1 (12)").font(.caption).foregroundStyle(.secondary)
+                Text("Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "test") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"))")
+                    .font(ReFareBranding.font(15)).foregroundStyle(ReFareBranding.ink)
                 Text("iOS development build. Import your own supported disc before playing.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }.padding(32) }
+                    .font(ReFareBranding.font(17)).foregroundStyle(ReFareBranding.ink)
+            }.padding(32).frame(maxWidth: .infinity) }
+            .background(ReFareBranding.yellow.ignoresSafeArea())
             .sheet(isPresented: $choosing) {
                 DiscPicker { url in
                     choosing = false
@@ -84,10 +87,37 @@ struct ImportView: View {
                         .frame(maxWidth: .infinity, alignment: .leading).padding() }
                 }
             }
-            .fullScreenCover(isPresented: $playing) { GameplayView().interactiveDismissDisabled() }
+            .fullScreenCover(isPresented: $playing) { GameplayView().font(.system(.body)).interactiveDismissDisabled() }
+            .onAppear { seedPersonalGame() }
 #endif
             .onOpenURL { url in startImport(url) }
         }.navigationViewStyle(.stack)
+            .font(ReFareBranding.font(22))
+            .foregroundStyle(ReFareBranding.ink)
+            .tint(ReFareBranding.red)
+            .preferredColorScheme(.light)
+    }
+
+    private func seedPersonalGame() {
+        let source = Bundle.main.bundleURL.appendingPathComponent("PersonalGame")
+        guard !hasGame, FileManager.default.fileExists(atPath: source.appendingPathComponent("sys/main.dol").path), !importing else { return }
+        importing = true
+        message = "Preparing your bundled personal game…"
+        Task {
+            defer { importing = false }
+            do {
+                let destination = GameLocation.root.appendingPathComponent("GCTE51")
+                try await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    let staging = destination.deletingLastPathComponent().appendingPathComponent("seed-" + UUID().uuidString)
+                    defer { try? FileManager.default.removeItem(at: staging) }
+                    try FileManager.default.copyItem(at: source, to: staging)
+                    if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
+                    try FileManager.default.moveItem(at: staging, to: destination)
+                }.value
+                message = "Your personal game is ready."
+            } catch { message = "Could not prepare the bundled game: \(error.localizedDescription)" }
+        }
     }
 
     private func readGameplayLog() -> String {
@@ -119,7 +149,7 @@ struct ImportView: View {
     }
 
     private func startImport(_ url: URL) {
-        guard !importing else { return }
+        guard !importing, !building else { return }
         // Acquire access immediately while handling the picker/open callback,
         // then hold it until all coordinated reads finish in the worker.
         let accessed = url.startAccessingSecurityScopedResource()
@@ -140,5 +170,11 @@ struct ImportView: View {
                 message = "Imported and verified \(count) game files. Your disc is ready."
             } catch { message = error.localizedDescription }
         }
+    }
+}
+
+private enum GameLocation {
+    static var root: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("ReFare")
     }
 }
