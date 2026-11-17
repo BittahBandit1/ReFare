@@ -49,7 +49,8 @@ constexpr uint32_t kRfLabels = kBase + 0x350;  // 12 * 44
 constexpr uint32_t kOptDraw = kBase + 0x560;
 constexpr uint32_t kRfDraw = kBase + 0x6B0;
 constexpr uint32_t kHandler = kBase + 0x800;
-constexpr uint32_t kChoices = kBase + 0x900;
+constexpr uint32_t kOptExtra = kBase + 0x8C0;  // second list call for OPTIONS
+constexpr uint32_t kChoices = kBase + 0x940;
 constexpr int kMaxRows = 9;       // value rows (9 + EXIT fill the screen)
 constexpr int kMaxChoices = 7;
 constexpr uint32_t kRecord = 44;
@@ -70,7 +71,7 @@ constexpr float kRowY0 = 112.0f, kLabelX = 184.0f, kValueX = 478.0f;
 // REFARE SETTINGS goes on the same row, to its right. The REFARE page has
 // 9 settings + EXIT, so its rows are 31 apart instead of the game's 34; EXIT
 // then ends above the help bar.
-constexpr float kExitY = 384.0f, kRefareX = 377.0f, kSubmenuStep = 31.0f;
+constexpr float kExitY = 384.0f, kRefareX = 304.0f, kSubmenuStep = 31.0f;
 float RowY(int row) { return kRowY0 + kSubmenuStep * static_cast<float>(row); }
 
 uint32_t Read32(CPUState* s, uint32_t a) { return static_cast<uint32_t>(moderngekko_mod_read(s, a, 4)); }
@@ -102,6 +103,7 @@ constexpr uint32_t Stwx(int s, int a, int b) { return 0x7C00012Eu | s << 21 | a 
 constexpr uint32_t Add(int d, int a, int b) { return 0x7C000214u | d << 21 | a << 16 | b << 11; }
 constexpr uint32_t Mulli(int d, int a, int imm) { return 0x1C000000u | d << 21 | a << 16 | (imm & 0xFFFF); }
 constexpr uint32_t Slwi(int a, int s, int n) { return 0x54000000u | s << 21 | a << 16 | n << 11 | 0 << 6 | (31 - n) << 1; }
+constexpr uint32_t Rlwinm(int a, int s, int sh, int mb, int me) { return 0x54000000u | s << 21 | a << 16 | sh << 11 | mb << 6 | me << 1; }
 constexpr uint32_t Mr(int a, int s) { return 0x7C000378u | s << 21 | a << 16 | s << 11; }
 constexpr uint32_t Cmpwi(int a, int imm) { return 0x2C000000u | a << 16 | (imm & 0xFFFF); }
 constexpr uint32_t kMflrR0 = 0x7C0802A6u, kMtlrR0 = 0x7C0803A6u, kBlr = 0x4E800020u;
@@ -180,6 +182,7 @@ void EmitHandler(CPUState* s) {
   c.Call(kDrawChoice);
   c.Emit(Lwz(0, 1, 36)); c.Emit(kMtlrR0); c.Emit(Lwz(31, 1, 28)); c.Emit(Lwz(30, 1, 24));
   c.Emit(Addi(1, 1, 32)); c.Emit(kBlr);
+  if (c.pc > kOptExtra) std::fprintf(stderr, "[refare] in-game settings: handler overlaps (%08x)\n", c.pc);
 }
 
 struct State {
@@ -199,7 +202,8 @@ bool GameMatches(CPUState* s) {
          Read32(s, 0x80022780u) == 0x547D0630u && Read32(s, 0x800227C4u) == 0x2C000006u &&
          Read32(s, 0x800227CCu) == 0x2C000008u && Read32(s, 0x800227D0u) == 0x40820044u &&
          Read32(s, 0x80022858u) == 0x3C808015u && Read32(s, 0x80022864u) == 0x38846604u &&
-         Read32(s, 0x80022870u) == 0x38A00009u && Read32(s, kOptionsDrawEnd) == kBlr;
+         Read32(s, 0x80022870u) == 0x38A00009u && Read32(s, kOptionsDrawEnd) == kBlr &&
+         Read32(s, 0x80022878u) == Bl(0x80022878u, 0x8001AF34u);
 }
 
 bool RegionFree(CPUState* s) {
@@ -224,23 +228,35 @@ void WriteChoices(CPUState* s, int row, const std::vector<std::string>& choices)
 void Install(CPUState* s, const std::vector<GameMenuRow>& rows) {
   State& st = St();
   st.rows = std::min(static_cast<int>(rows.size()), kMaxRows);
-  // OPTIONS: the game's 8 setting items, REFARE SETTINGS (item 8) and EXIT
-  // (item 9). The list renderer gives only the last item the short EXIT bar,
-  // so EXIT stays last and keeps its own row and record; REFARE SETTINGS gets
-  // a regular bar on the same row, to EXIT's right.
+  // OPTIONS: the game's 9 items unchanged (EXIT is item 8), then REFARE as
+  // item 9, on EXIT's row to its right with the same short button. The list
+  // renderer gives the short button only to the last item it draws, so the
+  // OPTIONS draw copy draws items 0-8 and then REFARE in a second call.
   Write32(s, kOptMenu, kOptDraw);
   Write32(s, kOptMenu + 4, 10);
   for (uint32_t i = 0; i < 9; ++i) {
-    const uint32_t to = i < 8 ? i : 9;  // the game's EXIT becomes item 9
-    Write32(s, kOptMenu + 8 + to * 8, Read32(s, kOptionsMenu + 8 + i * 8));
-    Write32(s, kOptMenu + 12 + to * 8, Read32(s, kOptionsMenu + 12 + i * 8));
+    Write32(s, kOptMenu + 8 + i * 8, Read32(s, kOptionsMenu + 8 + i * 8));
+    Write32(s, kOptMenu + 12 + i * 8, Read32(s, kOptionsMenu + 12 + i * 8));
     for (uint32_t w = 0; w < kRecord; w += 4)
-      Write32(s, kOptLabels + to * kRecord + w, Read32(s, kOptionsLabels + i * kRecord + w));
+      Write32(s, kOptLabels + i * kRecord + w, Read32(s, kOptionsLabels + i * kRecord + w));
   }
-  Write32(s, kOptMenu + 8 + 8 * 8, kRfMenu); Write32(s, kOptMenu + 12 + 8 * 8, 0);
-  WriteLabel(s, kOptLabels + 8 * kRecord, kRefareX, kExitY, "REFARE SETTINGS");
+  Write32(s, kOptMenu + 8 + 9 * 8, kRfMenu); Write32(s, kOptMenu + 12 + 9 * 8, 0);
+  WriteLabel(s, kOptLabels + 9 * kRecord, kRefareX, kExitY, "REFARE");
   // Items 6 (CONTROLLER SETTING) and 8 and up open something: "A to decide".
   CloneOptionsDraw(s, kOptDraw, 10, kOptLabels, 6, 8, true);
+  Write32(s, kOptDraw + (0x80022870u - kOptionsDraw), Li(5, 9));   // first call: items 0-8
+  Write32(s, kOptDraw + (0x80022878u - kOptionsDraw), Bl(kOptDraw + (0x80022878u - kOptionsDraw), kOptExtra));
+  {  // second call: REFARE alone (r31 = menu state, r29 = disabled mask), then the original tail call
+    Code c{s, kOptExtra};
+    c.Emit(Stwu(1, 1, -16)); c.Emit(kMflrR0); c.Emit(Stw(0, 1, 20));
+    c.Emit(Lwz(0, 31, 0)); c.Emit(Addi(9, 31, 4)); c.Emit(Slwi(0, 0, 2)); c.Emit(Lwzx(6, 9, 0));
+    c.Emit(Addi(6, 6, static_cast<uint32_t>(-9)));                  // highlighted when the cursor is on item 9
+    c.Emit(Lis(4, Ha(kOptLabels + 9 * kRecord))); c.Emit(Addi(4, 4, Lo(kOptLabels + 9 * kRecord)));
+    c.Emit(Li(3, 2071)); c.Emit(Li(5, 1)); c.Emit(Rlwinm(7, 29, 23, 9, 31));  // mask >> 9
+    c.Call(0x8001B3DCu);
+    c.Call(0x8001AF34u);
+    c.Emit(Lwz(0, 1, 20)); c.Emit(kMtlrR0); c.Emit(Addi(1, 1, 16)); c.Emit(kBlr);
+  }
 
   // REFARE SETTINGS submenu.
   Write32(s, kRfMenu, kRfDraw);

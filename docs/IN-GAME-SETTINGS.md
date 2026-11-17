@@ -1,6 +1,6 @@
 # ReFare settings inside the game's OPTIONS screen
 
-Desktop builds add a **REFARE SETTINGS** row to Crazy Taxi's own OPTIONS screen
+Desktop builds add a **REFARE** button, next to EXIT, to Crazy Taxi's own OPTIONS screen
 (GCTE51 revision 0). It opens a submenu that looks and works like the game's
 other options: resolution, aspect ratio, HUD and menus, FXAA, MetalFX
 upscaling (Apple), interpolation, V-Sync, Metal HUD (Apple) and the FPS
@@ -32,10 +32,11 @@ back one level.
 checks the game code it relies on, then writes into guest RAM the game never
 uses (`0x80001820`–`0x80002FFF`; Dolphin's HLE stub ends at `0x8000180B`):
 
-- a 10-item OPTIONS menu: the game's 8 setting items, REFARE SETTINGS, EXIT.
-  The game's layout is unchanged: REFARE SETTINGS sits on EXIT's row, to its
-  right. The list renderer gives only the last item the short EXIT bar, so
-  EXIT stays last; from RUMBLE FEATURE, down selects REFARE SETTINGS, then EXIT;
+- a 10-item OPTIONS menu: the game's 9 items, then REFARE. The game's layout
+  is unchanged: REFARE sits on EXIT's row, to its right, with the same short
+  button (down from EXIT selects it). The list renderer gives the short button
+  only to the last item it draws, so the OPTIONS draw copy calls it twice:
+  items 0-8, then REFARE on its own;
 - the REFARE submenu (rows 31 units apart so 9 settings and EXIT fit above
   the help bar), whose items share one small handler;
 - label and choice tables in the game's format;
