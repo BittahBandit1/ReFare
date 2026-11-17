@@ -99,7 +99,7 @@ def prepare_assets(base, source, template):
     (app/'embedded.mobileprovision').unlink(missing_ok=True)
     info = plistlib.loads((app/'Info.plist').read_bytes())
     info.update(CFBundleIdentifier='io.github.bittahbandit1.refare.play', CFBundleDisplayName='ReFare', CFBundleName='ReFare',
-                CFBundleShortVersionString='0.3.0', CFBundleVersion='14')
+                CFBundleShortVersionString='0.2.5', CFBundleVersion='15')
     (app/'Info.plist').write_bytes(plistlib.dumps(info))
     shutil.copytree(ROOT/'ports/ios/compiler-include', tools/'cinclude')
     (tools/'include/core').mkdir(parents=True)
@@ -195,7 +195,7 @@ def main():
     if not (app/'BuilderAssets/GameplayTemplate.rfarchive').is_file() or not (app/'BuilderAssets/Toolchain/runtime-helpers.a').is_file():
         raise ValueError('Built app is missing its template/compiler resources')
     info = plistlib.loads((app/'Info.plist').read_bytes())
-    info.update(CFBundleName='ReFare Builder', CFBundleDisplayName='ReFare Builder', CFBundleShortVersionString='0.3.0', CFBundleVersion='14')
+    info.update(CFBundleName='ReFare Builder', CFBundleDisplayName='ReFare Builder', CFBundleShortVersionString='0.2.5', CFBundleVersion='15')
     (app/'Info.plist').write_bytes(plistlib.dumps(info))
     sys.path.insert(0, str(ROOT/'scripts'))
     from ios import package_ipa

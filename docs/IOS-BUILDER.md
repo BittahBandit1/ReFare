@@ -54,7 +54,7 @@ The script downloads the official LLVM 20.1.8 sources and checks their pinned
 SHA-256, builds only the embedded compiler/linker libraries and AArch64 backend
 for iOS, builds the generic gameplay template, and packages:
 
-`build/release/ReFare-Builder-0.3.0-iOS15-arm64-unsigned.ipa`
+`build/release/ReFare-Builder-0.2.5-iOS15-arm64-unsigned.ipa`
 
 After a complete compiler-library build, `--skip-compiler-build` reuses those
 libraries. No personal disc or generated game sources are needed to build the

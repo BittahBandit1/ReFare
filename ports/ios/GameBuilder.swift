@@ -104,7 +104,7 @@ final class GameBuilder {
             try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
             let info: [String: Any] = ["CFBundleExecutable": "ReFareGame", "CFBundleIdentifier": "io.github.bittahbandit1.refare.game",
                 "CFBundleName": "ReFareGame", "CFBundlePackageType": "FMWK", "CFBundleVersion": "1",
-                "CFBundleShortVersionString": "0.3.0", "MinimumOSVersion": "15.0",
+                "CFBundleShortVersionString": "0.2.5", "MinimumOSVersion": "15.0",
                 "CFBundleSupportedPlatforms": ["iPhoneOS"]]
             try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
                 .write(to: framework.appendingPathComponent("Info.plist"), options: .atomic)
