@@ -161,7 +161,7 @@ Both buttons can be changed from the menu itself (see **Options menu button** be
 ### ReFare settings in the game's OPTIONS screen (desktop)
 
 The same settings also appear inside Crazy Taxi's own menus: **MODE SELECTION →
-OPTIONS → REFARE SETTINGS** (between RUMBLE FEATURE and EXIT). They use the
+OPTIONS → REFARE SETTINGS** (on EXIT's row, to its right). They use the
 game's own rows, lettering and controls: up/down to pick a setting, left/right
 to change it, EXIT or B to go back. Changes apply immediately, are saved, and
 stay in step with the overlay. Options menu button and Exit The Game stay in

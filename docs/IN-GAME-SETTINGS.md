@@ -32,11 +32,14 @@ back one level.
 checks the game code it relies on, then writes into guest RAM the game never
 uses (`0x80001820`–`0x80002FFF`; Dolphin's HLE stub ends at `0x8000180B`):
 
-- a 10-item OPTIONS menu: the game's 8 setting items, REFARE SETTINGS, EXIT;
-- the REFARE submenu, whose items share one small handler;
+- a 10-item OPTIONS menu: the game's 8 setting items, REFARE SETTINGS, EXIT.
+  The game's layout is unchanged: REFARE SETTINGS sits on EXIT's row, to its
+  right. The list renderer gives only the last item the short EXIT bar, so
+  EXIT stays last; from RUMBLE FEATURE, down selects REFARE SETTINGS, then EXIT;
+- the REFARE submenu (rows 31 units apart so 9 settings and EXIT fit above
+  the help bar), whose items share one small handler;
 - label and choice tables in the game's format;
-- two copies of `0x8002274C` with the table, item count and help text changed,
-  and the help bar drawn 20 units lower to make room for a tenth row;
+- two copies of `0x8002274C` with the table, item count and help text changed;
 - the handler, built like the game's AUDIO handler (`0x8001D554`).
 
 Finally it points root item `0x800DDFD0` at the new OPTIONS menu. Only the
